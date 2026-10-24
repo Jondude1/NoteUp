@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A black page with a nib stroke across it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#000000"
+        android:strokeWidth="3"
+        android:pathData="M36,30 L72,30 L72,78 L36,78 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#000000"
+        android:strokeWidth="2"
+        android:pathData="M42,42 L66,42 M42,50 L66,50 M42,58 L58,58" />
+    <path
+        android:fillColor="#000000"
+        android:pathData="M60,66 Q66,60 74,58 Q70,64 64,70 Z" />
+</vector>
