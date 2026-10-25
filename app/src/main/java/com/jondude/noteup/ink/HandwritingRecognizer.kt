@@ -33,7 +33,8 @@ object HandwritingRecognizer {
     }
 
     /** Groups strokes into lines top-to-bottom, recognizes each line, joins with newlines. */
-    suspend fun recognize(strokes: List<Stroke>, lang: String): String {
+    suspend fun recognize(all: List<Stroke>, lang: String): String {
+        val strokes = all.filter { !it.box && !it.marker } // check boxes and highlighter aren't handwriting
         if (strokes.isEmpty()) return ""
         ensureModel(lang)
         val recognizer = DigitalInkRecognition.getClient(DigitalInkRecognizerOptions.builder(model(lang)).build())

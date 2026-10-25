@@ -113,6 +113,13 @@ object Documents {
             val n = st.pts.size / 3
             for (i in 1 until n) c.drawLine(st.pts[(i - 1) * 3] * sc, st.pts[(i - 1) * 3 + 1] * sc, st.pts[i * 3] * sc, st.pts[i * 3 + 1] * sc, p)
         }
+        for (st in page.strokes) if (st.box && st.checked) {
+            val t = com.jondude.noteup.ink.InkGestures.tick(InkView.boundsOf(listOf(st)))
+            p.color = Color.BLACK
+            p.strokeWidth = maxOf(1.5f, st.width * 1.9f * sc)
+            c.drawLine(t[0] * sc, t[1] * sc, t[2] * sc, t[3] * sc, p)
+            c.drawLine(t[4] * sc, t[5] * sc, t[6] * sc, t[7] * sc, p)
+        }
         return bmp
     }
 
@@ -158,7 +165,7 @@ object Documents {
         nb.pageIds.forEachIndexed { i, pid ->
             progress(i + 1, nb.pageIds.size)
             var page = Store.page(pid, nb.id)
-            if (page.convertedText == null && page.strokes.any { !it.marker }) {
+            if (page.convertedText == null && page.strokes.any { !it.marker && !it.box }) {
                 val text = try { HandwritingRecognizer.recognize(page.strokes.filter { !it.marker }, Settings.language) } catch (e: Exception) { null }
                 if (text != null) { page = page.copy(convertedText = text); Store.savePage(page, touch = false) }
             }
@@ -166,6 +173,10 @@ object Documents {
             if (page.tags.isNotEmpty()) sb.append(page.tags.joinToString(" ") { "#" + it.replace(' ', '-') }).append("\n\n")
             page.convertedText?.takeIf { it.isNotBlank() }?.let { sb.append(it).append("\n\n") }
             page.texts.forEach { sb.append("- ").append(it.text.replace('\n', ' ')).append('\n') }
+            page.strokes.filter { it.box }.forEach { b ->
+                val task = b.taskId?.let { id -> Store.tasks.firstOrNull { it.id == id } }
+                if (task != null) sb.append("- [").append(if (b.checked) "x" else " ").append("] ").append(task.text).append('\n')
+            }
             page.annotations.forEach { sb.append("> **Claude:** ").append(it.text.replace("\n", "\n> ")).append("\n\n") }
         }
         Store.recordings.filter { it.notebookId == nb.id && it.summary != null }.forEach { r ->

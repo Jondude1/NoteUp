@@ -57,7 +57,8 @@ object Sync {
         if (!configured) return false
         withContext(Dispatchers.Main) { running = true; status = "Syncing…" }
         return try {
-            val msg = sync()
+            // network work must never run on the UI thread (the "Sync now" button calls from there)
+            val msg = withContext(Dispatchers.IO) { sync() }
             withContext(Dispatchers.Main) { status = msg }
             true
         } catch (e: Exception) {

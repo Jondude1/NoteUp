@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import androidx.core.content.ContextCompat
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -79,8 +80,12 @@ object Recorder {
 
         segments.clear(); partial = ""; elapsedMs = 0; bytesWritten = 0; status = null
         active = rec
+        lateTarget = null
         Store.upsertRecording(rec)
         running = true
+        appCtx = ctx.applicationContext
+        // a foreground service keeps the microphone alive when the screen locks or you switch apps
+        try { ContextCompat.startForegroundService(appCtx!!, Intent(appCtx, RecordingService::class.java)) } catch (_: Exception) {}
 
         val useWhisper = Settings.sttEngine == SttEngine.WHISPER
         if (!useWhisper) main.post { OnDeviceStt.start(ctx.applicationContext) }
@@ -124,18 +129,37 @@ object Recorder {
         running = false
         thread?.join(2000)
         thread = null
+        // late transcription results (the last spoken sentence, whisper chunks in flight) still land on the saved recording
+        lateTarget = rec.id
         main.post { OnDeviceStt.stop() }
         val base = Store.recording(rec.id) ?: rec // keep a rename made while recording
         val done = base.copy(durationMs = bytesWritten / BYTES_PER_MS, segments = segments.toList())
         Store.upsertRecording(done)
         active = null
         partial = ""
-        // late transcription results (whisper chunks in flight) still land on the saved recording
-        lateTarget = done.id
+        try { appCtx?.let { it.stopService(Intent(it, RecordingService::class.java)) } } catch (_: Exception) {}
         return done
     }
 
     @Volatile private var lateTarget: String? = null
+    private var appCtx: Context? = null
+
+    /** Where a transcript line belongs right now: the live recording, or one that just stopped. */
+    internal fun targetId(): String? = active?.id ?: lateTarget
+
+    /** After a crash or kill mid-recording the WAV header was never finished; make the file playable again. */
+    fun recoverOrphans() {
+        if (active != null) return
+        for (r in Store.recordings.toList()) {
+            if (r.durationMs > 0) continue
+            val f = Store.audioFile(r)
+            if (!f.exists() || f.length() <= 44) continue
+            try {
+                Wav.finalize(f)
+                Store.upsertRecording(r.copy(durationMs = (f.length() - 44) / BYTES_PER_MS))
+            } catch (_: Exception) {}
+        }
+    }
     private val order = Mutex()
 
     private fun sendChunk(pcm: ByteArray, startMs: Long, endMs: Long) {
@@ -151,10 +175,11 @@ object Recorder {
     }
 
     internal fun addSegment(seg: Segment, recId: String?) {
+        if (recId == null) return
         if (active != null && active?.id == recId) {
             val i = segments.indexOfFirst { it.startMs > seg.startMs }
             if (i < 0) segments.add(seg) else segments.add(i, seg)
-        } else if (recId != null && recId == lateTarget) {
+        } else if (recId == lateTarget) {
             Store.recording(recId)?.let { r ->
                 Store.upsertRecording(r.copy(segments = (r.segments + seg).sortedBy { it.startMs }))
             }
@@ -254,9 +279,11 @@ private object OnDeviceStt : RecognitionListener {
 
     fun stop() {
         pumping = false
-        closePipe()
-        sr?.let { try { it.stopListening(); it.destroy() } catch (_: Exception) {} }
+        closePipe() // end of audio: the recognizer finishes the sentence it was in the middle of
+        val old = sr
         sr = null
+        // give it a moment to deliver that last result before shutting it down
+        main.postDelayed({ try { old?.destroy() } catch (_: Exception) {} }, 2500)
     }
 
     private fun restart(delayMs: Long) {
@@ -269,7 +296,7 @@ private object OnDeviceStt : RecognitionListener {
 
     private fun commit(text: String) {
         if (text.isBlank()) return
-        Recorder.addSegment(Segment(segStartMs, Recorder.nowMs(), text.trim()), Recorder.activeId())
+        Recorder.addSegment(Segment(segStartMs, Recorder.nowMs(), text.trim()), Recorder.targetId())
         segStartMs = Recorder.nowMs()
         Recorder.setPartial("")
         failures = 0

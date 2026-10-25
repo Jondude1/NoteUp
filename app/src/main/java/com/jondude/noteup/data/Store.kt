@@ -203,9 +203,20 @@ object Store {
 
     fun addTasksWithDue(items: List<Pair<String, String?>>, source: String?) {
         items.filter { it.first.isNotBlank() }.forEach { (text, due) ->
-            tasks.add(0, TaskItem(text = text.trim(), source = source, due = due, updatedAt = System.currentTimeMillis()))
+            val t = text.trim()
+            // running minutes twice must not list the same action items twice
+            if (tasks.any { !it.done && it.text == t && it.source == source }) return@forEach
+            tasks.add(0, TaskItem(text = t, source = source, due = due, updatedAt = System.currentTimeMillis()))
         }
         saveTasks()
+    }
+
+    /** Adds one task and returns it (so a checkbox on a page can link to it). */
+    fun addTask(text: String, due: String?, source: String?, done: Boolean = false): TaskItem {
+        val t = TaskItem(text = text.trim(), done = done, source = source, due = due, updatedAt = System.currentTimeMillis())
+        tasks.add(0, t)
+        saveTasks()
+        return t
     }
 
     fun updateTask(t: TaskItem) {

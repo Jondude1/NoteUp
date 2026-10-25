@@ -42,7 +42,7 @@ object Indexer {
         }
     }
 
-    private fun needsText(p: Page) = p.convertedText == null && p.strokes.any { !it.marker }
+    private fun needsText(p: Page) = p.convertedText == null && p.strokes.any { !it.marker && !it.box }
 
     fun schedule(pageId: String, nbId: String) {
         synchronized(queued) { if (!queued.add(pageId)) return }

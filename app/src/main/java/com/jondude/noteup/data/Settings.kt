@@ -30,6 +30,10 @@ object Settings {
     var refreshFlash by mutableStateOf(true)
     var defaultTemplate by mutableStateOf(Template.LINED)
     var shapeSnap by mutableStateOf(true)
+    /** Draw a small square and it becomes a tickable check box that feeds Tasks. */
+    var checkboxInk by mutableStateOf(true)
+    /** Scribble back and forth over ink to erase it. */
+    var scribbleErase by mutableStateOf(true)
 
     /** AI gives pages a title and tags after they're read. */
     var autoTag by mutableStateOf(true)
@@ -61,6 +65,8 @@ object Settings {
         refreshFlash = prefs.getBoolean("refreshFlash", true)
         defaultTemplate = enumOr(prefs.getString("template", null), Template.LINED)
         shapeSnap = prefs.getBoolean("shapeSnap", true)
+        checkboxInk = prefs.getBoolean("checkboxInk", true)
+        scribbleErase = prefs.getBoolean("scribbleErase", true)
         autoTag = prefs.getBoolean("autoTag", true)
         syncUrl = prefs.getString("syncUrl", "") ?: ""
         syncUser = prefs.getString("syncUser", "") ?: ""
@@ -87,6 +93,8 @@ object Settings {
             .putBoolean("refreshFlash", refreshFlash)
             .putString("template", defaultTemplate.name)
             .putBoolean("shapeSnap", shapeSnap)
+            .putBoolean("checkboxInk", checkboxInk)
+            .putBoolean("scribbleErase", scribbleErase)
             .putBoolean("autoTag", autoTag)
             .putString("syncUrl", syncUrl.trim())
             .putString("syncUser", syncUser.trim())

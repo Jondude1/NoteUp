@@ -37,6 +37,12 @@ class MainActivity : ComponentActivity() {
         Store.init(applicationContext)
         Settings.init(applicationContext)
         com.jondude.noteup.data.Indexer.start()
+        Recorder.recoverOrphans()
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            // so the "NoteUp is recording" notice can show; recording works either way
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
+        }
         Store.onLocalChange = { com.jondude.noteup.data.Sync.schedule() }
         setContent {
             val recording = Recorder.active != null

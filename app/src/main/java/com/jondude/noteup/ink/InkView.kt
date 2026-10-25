@@ -48,6 +48,10 @@ class InkView(context: Context) : View(context) {
     var inkColor = 0
     /** Hold the pen still at the end of a stroke to snap it to a clean line or shape. */
     var shapeSnap = true
+    /** A small square drawn with the pen becomes a tickable check box (linked to a task). */
+    var checkboxInk = true
+    /** Scribbling back and forth over ink wipes it out. */
+    var scribbleErase = true
 
     /** Imported PDF page drawn behind the ink. */
     var background: Bitmap? = null
@@ -68,6 +72,8 @@ class InkView(context: Context) : View(context) {
     var onAnnotationTap: ((MarginNote) -> Unit)? = null
     /** Finger swipe: +1 = next page, -1 = previous. */
     var onSwipe: ((Int) -> Unit)? = null
+    /** A check box was ticked or unticked (the stroke already carries the new state). */
+    var onBoxToggle: ((Stroke) -> Unit)? = null
 
     private var strokes: MutableList<Stroke> = mutableListOf()
     private var annotations: List<MarginNote> = emptyList()
@@ -111,6 +117,15 @@ class InkView(context: Context) : View(context) {
     }
 
     fun currentStrokes(): List<Stroke> = strokes.toList()
+
+    /** Edits strokes in place without an undo step (linking a check box to its task, ticks made in the Tasks tab). */
+    fun updateStrokes(ids: Set<String>, f: (Stroke) -> Stroke) {
+        var any = false
+        for (i in strokes.indices) {
+            if (strokes[i].id in ids) { strokes[i] = f(strokes[i]); any = true }
+        }
+        if (any) changed()
+    }
 
     fun deleteStrokes(ids: Set<String>) {
         if (ids.isEmpty()) return
@@ -208,6 +223,7 @@ class InkView(context: Context) : View(context) {
             val faded = ph != null && (s.recId != ph.first || s.audioMs > ph.second)
             drawStroke(c, s.pts, s.width, if (faded) fadedPaint else paintFor(s))
         }
+        for (s in strokes) if (s.box && s.checked) drawTick(c, s)
         drawTexts(c)
         drawAnnotations(c)
         cacheDirty = false
@@ -259,6 +275,15 @@ class InkView(context: Context) : View(context) {
             paint.strokeWidth = max(1f, width * scale * (0.45f + 0.9f * p.coerceIn(0f, 1f)))
             c.drawLine(vx(pts[(i - 1) * 3]), vy(pts[(i - 1) * 3 + 1]), vx(pts[i * 3]), vy(pts[i * 3 + 1]), paint)
         }
+    }
+
+    /** The hand-drawn tick inside a ticked check box. */
+    private fun drawTick(c: Canvas, s: Stroke) {
+        val t = InkGestures.tick(boundsOf(listOf(s)))
+        val p = paintFor(s)
+        p.strokeWidth = max(2f, s.width * 1.9f * scale)
+        c.drawLine(vx(t[0]), vy(t[1]), vx(t[2]), vy(t[3]), p)
+        c.drawLine(vx(t[4]), vy(t[5]), vx(t[6]), vy(t[7]), p)
     }
 
     private fun drawMarker(c: Canvas, pts: FloatArray, width: Float) {
@@ -378,7 +403,13 @@ class InkView(context: Context) : View(context) {
                 addPoint(e.x, e.y, e.pressure, e.eventTime)
                 finishGesture()
             }
-            MotionEvent.ACTION_CANCEL -> { removeCallbacks(holdCheck); live.clear(); liveTimes.clear(); invalidate() }
+            MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(holdCheck)
+                // strokes already erased by this gesture must still be saved
+                if (liveErasing && erasedThisGesture) changed()
+                liveErasing = false
+                live.clear(); liveTimes.clear(); invalidate()
+            }
         }
         return true
     }
@@ -447,10 +478,15 @@ class InkView(context: Context) : View(context) {
         if (tool == Tool.LASSO) {
             finishLasso()
         } else if (live.size >= 3) {
+            // gestures first: tapping a check box, scribbling something out
+            if (tool == Tool.PEN && !liveSnapped && handlePenGesture(live.toFloatArray())) {
+                live.clear(); liveTimes.clear(); invalidate()
+                return
+            }
             snapshot()
             val audio = liveAudio
             val isMarker = tool == Tool.MARKER
-            val s = Stroke(
+            var s = Stroke(
                 pts = live.toFloatArray(),
                 times = liveTimes.toLongArray(),
                 t0 = System.currentTimeMillis(),
@@ -460,6 +496,16 @@ class InkView(context: Context) : View(context) {
                 color = if (isMarker) 0 else inkColor,
                 marker = isMarker,
             )
+            // a small square becomes a clean check box
+            if (tool == Tool.PEN && checkboxInk) {
+                val r = InkGestures.checkbox(s.pts)
+                if (r != null && InkCommands.enclosedBy(s, strokes).isEmpty()) {
+                    val side = ((r.width() + r.height()) / 2f).coerceIn(24f, 56f)
+                    val sq = ShapeSnap.rect(r.centerX() - side / 2, r.centerY() - side / 2, r.centerX() + side / 2, r.centerY() + side / 2)
+                    s = s.copy(pts = sq, times = LongArray(sq.size / 3) { it * 8L }, box = true, width = max(penWidth, 3f))
+                    performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+                }
+            }
             strokes.add(s)
             // ink can go straight onto the cache; a highlighter belongs underneath, so redraw
             if (isMarker) invalidateCache()
@@ -468,6 +514,63 @@ class InkView(context: Context) : View(context) {
         }
         live.clear(); liveTimes.clear()
         invalidate()
+    }
+
+    /** Pen gestures that act on existing ink instead of adding a stroke. True when the stroke was used up. */
+    private fun handlePenGesture(arr: FloatArray): Boolean {
+        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        var i = 0
+        while (i < arr.size) {
+            minX = min(minX, arr[i]); maxX = max(maxX, arr[i]); minY = min(minY, arr[i + 1]); maxY = max(maxY, arr[i + 1])
+            i += 3
+        }
+        // a tap on a check box ticks it
+        if (maxX - minX < 8f && maxY - minY < 8f) {
+            val hit = boxAt(arr[0], arr[1]) ?: return false
+            toggleBox(hit)
+            return true
+        }
+        if (!scribbleErase) return false
+        val zone = InkGestures.scribble(arr) ?: return false
+        val victims = strokes.filter { coveredBy(it, zone) }
+        if (victims.isEmpty()) return false // nothing underneath: it's just a squiggle, keep it
+        snapshot()
+        strokes.removeAll(victims.toSet())
+        clearSelection()
+        performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+        changed()
+        return true
+    }
+
+    /** Most of the stroke lies inside the scribbled area. */
+    private fun coveredBy(s: Stroke, zone: RectF): Boolean {
+        val n = s.pts.size / 3
+        if (n == 0) return false
+        var inside = 0
+        var i = 0
+        while (i < s.pts.size) {
+            if (s.pts[i] >= zone.left - 12f && s.pts[i] <= zone.right + 12f &&
+                s.pts[i + 1] >= zone.top - 12f && s.pts[i + 1] <= zone.bottom + 12f) inside++
+            i += 3
+        }
+        return inside * 10 >= n * 6
+    }
+
+    private fun boxAt(px: Float, py: Float): Stroke? =
+        strokes.lastOrNull { s ->
+            if (!s.box) return@lastOrNull false
+            val b = boundsOf(listOf(s))
+            px >= b.left - 10f && px <= b.right + 10f && py >= b.top - 10f && py <= b.bottom + 10f
+        }
+
+    private fun toggleBox(box: Stroke) {
+        val i = strokes.indexOfFirst { it.id == box.id }
+        if (i < 0) return
+        snapshot()
+        strokes[i] = box.copy(checked = !box.checked)
+        performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+        changed()
+        onBoxToggle?.invoke(strokes[i])
     }
 
     private fun finishLasso() {
@@ -509,6 +612,9 @@ class InkView(context: Context) : View(context) {
                 annotationRects.entries.firstOrNull { it.value.contains(e.x, e.y) }?.let { hit ->
                     annotations.firstOrNull { it.id == hit.key }?.let { onAnnotationTap?.invoke(it) }
                     return true
+                }
+                if (tool != Tool.PLAY) {
+                    boxAt(toPageX(e.x), toPageY(e.y))?.let { toggleBox(it); return true }
                 }
                 if (tool == Tool.PLAY) {
                     val px = toPageX(e.x)

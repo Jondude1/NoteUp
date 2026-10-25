@@ -67,6 +67,8 @@ import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.PAGE_H
 import com.jondude.noteup.data.PAGE_W
 import com.jondude.noteup.data.Page
+import com.jondude.noteup.data.PageText
+import com.jondude.noteup.data.Reminders
 import com.jondude.noteup.data.Recording
 import com.jondude.noteup.data.Settings
 import com.jondude.noteup.data.Store
@@ -98,7 +100,7 @@ private class PageEditor(val nbId: String, val scope: CoroutineScope) {
     /** Save, and queue the page to be read in the background (search, titles, tags). */
     fun leave() {
         flush()
-        page?.let { p -> if (p.convertedText == null && p.strokes.any { !it.marker }) Indexer.schedule(p.id, nbId) }
+        page?.let { p -> if (p.convertedText == null && p.strokes.any { !it.marker && !it.box }) Indexer.schedule(p.id, nbId) }
     }
 
     fun update(f: (Page) -> Page) {
@@ -125,6 +127,7 @@ private class CircleState {
     var active: CircleCmd? = null
     var knownIds: Set<String> = emptySet()
     var job: Job? = null
+    var boxJob: Job? = null
 }
 
 private enum class PanelKind { NONE, TRANSCRIPT, CLAUDE }
@@ -174,6 +177,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         ink.setContent(p.strokes, p.annotations)
         ink.texts = p.texts
         circle.active = null
+        circle.boxJob?.cancel()
         circle.knownIds = p.strokes.map { it.id }.toHashSet()
         selection = null
         ink.background = null
@@ -185,6 +189,8 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     LaunchedEffect(penWidth) { ink.penWidth = penWidth }
     LaunchedEffect(Settings.shapeSnap) { ink.shapeSnap = Settings.shapeSnap }
     LaunchedEffect(Settings.stylusOnly) { ink.stylusOnly = Settings.stylusOnly }
+    LaunchedEffect(Settings.checkboxInk) { ink.checkboxInk = Settings.checkboxInk }
+    LaunchedEffect(Settings.scribbleErase) { ink.scribbleErase = Settings.scribbleErase }
     DisposableEffect(Unit) {
         ink.recordingClock = { Recorder.clock() }
         onDispose { ed.leave(); ink.recordingClock = null }
@@ -212,7 +218,9 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     fun pageRecordings(): List<Recording> {
         val p = ed.page ?: return emptyList()
         val linked = p.strokes.mapNotNull { it.recId }.toSet()
-        return Store.recordings.filter { it.pageId == p.id || it.id in linked }
+        return Store.recordings.filter { it.pageId == p.id || it.id in linked }.map { r ->
+            if (Recorder.active?.id == r.id) r.copy(segments = Recorder.segments.toList()) else r
+        }
     }
 
     fun runClaude(title: String, mode: String = "", work: suspend () -> String, then: (String) -> String? = { null }) {
@@ -230,7 +238,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
 
     fun targetStrokes() = ed.page?.let { p ->
         val sel = selection
-        (if (sel != null) p.strokes.filter { it.id in sel.first } else p.strokes).filter { !it.marker }
+        (if (sel != null) p.strokes.filter { it.id in sel.first } else p.strokes).filter { !it.marker && !it.box }
     } ?: emptyList()
 
     fun placeInMargin(answer: String, area: RectF?, strokes: List<Stroke>) {
@@ -350,12 +358,73 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         if (ok) startRecording()
     }
 
+    /** Drawn check boxes become tasks: the handwriting beside a box is read and added to Tasks. */
+    suspend fun linkBoxes() {
+        val forPage = ed.page?.id ?: return
+        val all = ink.currentStrokes()
+        val source = "${nb.title} · p${safeIndex + 1}"
+        for (box in all.filter { it.box && it.taskId == null }) {
+            val row = InkCommands.rowStrokes(box, all)
+            if (row.isEmpty()) continue
+            val read = try { HandwritingRecognizer.recognize(row, Settings.language) } catch (e: Exception) { "" }
+            val text = read.replace('\n', ' ').trim().take(140)
+            if (text.isBlank() || ed.page?.id != forPage) continue
+            val cur = ink.currentStrokes().firstOrNull { it.id == box.id }
+            if (cur == null || cur.taskId != null) continue
+            val task = Store.tasks.firstOrNull { it.text == text && it.source == source }
+                ?: Store.addTask(text, null, source, done = cur.checked)
+            ink.updateStrokes(setOf(box.id)) { it.copy(taskId = task.id, checked = task.done) }
+        }
+    }
+
+    fun scheduleLink() {
+        if (!Settings.checkboxInk) return
+        circle.boxJob?.cancel()
+        circle.boxJob = scope.launch { delay(2500); linkBoxes() }
+    }
+
+    /** A task ticked in the Tasks tab ticks its box on the page. */
+    fun reconcileBoxes() {
+        val fix = ink.currentStrokes().filter { it.box && it.taskId != null }.mapNotNull { b ->
+            val t = Store.tasks.firstOrNull { it.id == b.taskId } ?: return@mapNotNull null
+            if (t.done != b.checked) b.id to t.done else null
+        }.toMap()
+        if (fix.isNotEmpty()) ink.updateStrokes(fix.keys) { it.copy(checked = fix[it.id] ?: it.checked) }
+    }
+
+    /** Circle something and write a day beside it: it becomes a dated task. */
+    suspend fun addReminder(r: Reminders.Reminder, target: List<Stroke>, area: RectF) {
+        val read = try { HandwritingRecognizer.recognize(target, Settings.language) } catch (e: Exception) { "" }
+        val text = read.replace('\n', ' ').trim().take(140)
+        if (text.isBlank()) {
+            panel = Panel(PanelKind.CLAUDE, "Reminder", error = "I couldn't read what you circled. Write it a little larger, or add the task in the Tasks tab.")
+            return
+        }
+        Store.addTask(text, r.due, "${nb.title} · p${safeIndex + 1}")
+        val said = r.due?.let { dueLabel(it) }
+        // a small typed note beside the circle, so the page shows it was captured
+        val x = min(area.right + 14f, PAGE_W - 220f)
+        ed.update { it.copy(texts = it.texts + PageText(x = x, y = area.top, w = 200f, text = "→ ${said ?: "task"}", size = 16f, centered = false)) }
+        ink.texts = ed.page!!.texts
+        panel = Panel(PanelKind.CLAUDE, "Reminder",
+            body = "Added to Tasks: $text" + (if (said != null) " — $said." else ".") +
+                "\n\nIt shows on your Today tab when it's due. In Tasks, tap 📅 to put it in your calendar.")
+    }
+
+    // ticks made in the Tasks tab show on the page; boxes drawn earlier but not yet linked get linked
+    val taskSig = Store.tasks.map { it.id to it.done }
+    LaunchedEffect(taskSig, pageId) {
+        reconcileBoxes()
+        if (ink.currentStrokes().any { it.box && it.taskId == null }) scheduleLink()
+    }
+
     SideEffect {
         ink.onStrokesChanged = { s ->
             ed.update { it.copy(strokes = s, convertedText = null) }
             val added = s.filter { it.id !in circle.knownIds }
             circle.knownIds = s.map { it.id }.toHashSet()
-            if (added.size == 1) {
+            if (s.any { it.box && it.taskId == null }) scheduleLink()
+            if (added.size == 1 && !added[0].box) {
                 val st = added[0]
                 val c = circle.active
                 val now = SystemClock.uptimeMillis()
@@ -375,6 +444,13 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                             ink.deleteStrokes(c.cmdIds.toSet())
                             panel = Panel(PanelKind.CLAUDE, "Claude")
                             runCommand(parsed.first, parsed.second, target, c.bounds)
+                        } else {
+                            val reminder = Reminders.parse(written)
+                            if (reminder != null) {
+                                val target = ink.currentStrokes().filter { it.id in c.enclosed }
+                                ink.deleteStrokes(c.cmdIds.toSet())
+                                addReminder(reminder, target, c.bounds)
+                            }
                         }
                     }
                 } else {
@@ -385,6 +461,11 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             }
         }
         ink.onLasso = { ids, b -> selection = ids to b }
+        ink.onBoxToggle = { st ->
+            val tid = st.taskId
+            if (tid != null) Store.tasks.firstOrNull { it.id == tid }?.let { Store.updateTask(it.copy(done = st.checked)) }
+            else scheduleLink()
+        }
         ink.onSwipe = { dir -> turn(dir) }
         ink.onAnnotationTap = { tappedNote = it }
         ink.onSeek = { recId, ms -> Store.recording(recId)?.let { Player.play(it, max(0L, ms - 1500L)) } }
@@ -691,7 +772,7 @@ private fun ClaudePanel(
             InkButton("Remove typed labels", small = true, onClick = onClearLabels)
         }
         Spacer(Modifier.height(10.dp))
-        T("Tip: circle a word, then write define, translate, explain, solve or ? next to it.", size = 13.sp, color = Ink.Gray, italic = true)
+        T("Tips: circle a word and write define, translate, explain, solve or ? beside it. Write a day (Fri, tomorrow, 10/30) beside a circled item to make it a reminder. Draw a small box to make a to-do; tap it to tick. Scribble over ink to erase it.", size = 13.sp, color = Ink.Gray, italic = true)
         Spacer(Modifier.height(16.dp))
         HRule(thickness = 1.dp)
         Spacer(Modifier.height(12.dp))

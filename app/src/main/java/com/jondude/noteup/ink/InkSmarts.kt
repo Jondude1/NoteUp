@@ -49,6 +49,18 @@ object InkCommands {
         }.map { it.id }.toSet()
     }
 
+    /** Handwriting on the same line, to the right of a check box: that is the task's wording. */
+    fun rowStrokes(box: Stroke, all: List<Stroke>): List<Stroke> {
+        val b = InkView.boundsOf(listOf(box))
+        val h = b.height()
+        return all.filter { s ->
+            if (s.id == box.id || s.box || s.marker) return@filter false
+            val sb = InkView.boundsOf(listOf(s))
+            val cy = sb.centerY()
+            cy > b.top - h * 0.7f && cy < b.bottom + h * 0.7f && sb.left >= b.right - 6f && sb.left - b.right < 700f
+        }
+    }
+
     /** Gap between two rectangles (0 if they overlap). */
     fun gap(a: RectF, b: RectF): Float {
         val dx = max(0f, max(a.left - b.right, b.left - a.right))

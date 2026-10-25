@@ -29,6 +29,12 @@ Every push to `main` rebuilds the APK automatically (Actions tab).
 - Sync between tablets through any WebDAV server (Nextcloud works)
 - Today tab: calendar, due tasks and an AI daily brief
 
+**Pen tricks**
+- **Check boxes** — draw a small square and it becomes a clean box. Tap it to tick it. The writing beside it is added to Tasks, and ticking either one ticks the other
+- **Scribble to erase** — scratch back and forth over ink to wipe it out (only when there is ink underneath)
+- **Circle and remind** — circle something and write a day beside it (Fri, tomorrow, 10/30, oct 30, in 3 days, "remind me friday"). It becomes a dated task and shows on your Today tab. Works offline
+- Recording keeps going when the screen locks or you switch apps, and a recording interrupted by a crash is recovered
+
 **Claude twists**
 - **Circle and write** — circle a word, write define / translate / explain / solve / ? beside it
 - **Clean diagram** — lasso a sketch and it's redrawn with clean shapes and typed labels

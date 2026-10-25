@@ -505,8 +505,8 @@ private fun AskTab() {
                                 if (p.convertedText == null && p.strokes.isNotEmpty()) {
                                     progress = "Reading… ${++done}/$pending"
                                     try {
-                                        val t = HandwritingRecognizer.recognize(p.strokes, Settings.language)
-                                        Store.savePage(p.copy(convertedText = t))
+                                        val t = HandwritingRecognizer.recognize(p.strokes.filter { !it.marker && !it.box }, Settings.language)
+                                        Store.savePage(p.copy(convertedText = t), touch = false)
                                     } catch (e: Exception) { progress = "Couldn't read handwriting: ${e.message}" }
                                 }
                             }
@@ -631,6 +631,10 @@ private fun SettingsTab() {
                 note = "A quick black blink when you turn pages, like a real e-ink screen")
             Toggle("Snap shapes", Settings.shapeSnap, { v -> s { Settings.shapeSnap = v } },
                 note = "Hold the pen still at the end of a stroke to turn it into a clean line, box, circle or triangle")
+            Toggle("Check boxes", Settings.checkboxInk, { v -> s { Settings.checkboxInk = v } },
+                note = "Draw a small square and it becomes a box you can tap to tick. The writing beside it becomes a task in Tasks")
+            Toggle("Scribble to erase", Settings.scribbleErase, { v -> s { Settings.scribbleErase = v } },
+                note = "Scratch back and forth over ink with the pen to wipe it out")
             Toggle("Auto titles and tags", Settings.autoTag, { v -> s { Settings.autoTag = v } },
                 note = "After a page is read, the AI names it and tags its topics (uses your AI setting)")
             SectionLabel("Default paper")

@@ -40,6 +40,11 @@ data class Stroke(
     val color: Int = 0,
     /** Highlighter: wide, translucent, drawn under the ink. */
     val marker: Boolean = false,
+    /** A drawn check box (clean square). Tapping it ticks it; it is linked to a task. */
+    val box: Boolean = false,
+    val checked: Boolean = false,
+    /** Task this check box stands for. */
+    val taskId: String? = null,
 )
 
 /** Typed text placed on the page (diagram labels from "Clean up diagram"). */
