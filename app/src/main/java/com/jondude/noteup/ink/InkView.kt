@@ -20,6 +20,8 @@ import android.view.View
 import com.jondude.noteup.data.MarginNote
 import com.jondude.noteup.data.PAGE_H
 import com.jondude.noteup.data.PAGE_W
+import com.jondude.noteup.data.PenMode
+import com.jondude.noteup.data.PressureMode
 import com.jondude.noteup.data.Stroke
 import com.jondude.noteup.data.Template
 import kotlin.math.abs
@@ -42,7 +44,19 @@ class InkView(context: Context) : View(context) {
     var tool: Tool = Tool.PEN
         set(v) { field = v; if (v != Tool.LASSO) clearSelection(); invalidate() }
     var penWidth = 3.5f
-    var stylusOnly = true
+
+    // ---- pen input settings (see Settings) ----
+    var penMode = PenMode.AUTO
+    var pressureMode = PressureMode.AUTO
+    /** Contact width above which a touch counts as a palm, in px. */
+    var palmPx = 60f
+    var scratchErase = true
+    /** Set from outside when a stylus button (learned key) toggles the eraser. */
+    var eraserLatched = false
+    var stylusSeen = false
+    var onStylusDetected: (() -> Unit)? = null
+    /** Two-finger tap. */
+    var onTwoFingerTap: (() -> Unit)? = null
 
     /** While recording, returns (recordingId, current audio ms) so strokes get linked to the audio. */
     var recordingClock: (() -> Pair<String, Long>?)? = null
@@ -260,6 +274,7 @@ class InkView(context: Context) : View(context) {
     private val liveTimes = ArrayList<Long>(256)
     private var liveT0 = 0L
     private var liveErasing = false
+    private var liveSimulated = false
     private var liveAudio: Pair<String, Long>? = null
     private var erasedThisGesture = false
     private var downX = 0f
@@ -267,26 +282,51 @@ class InkView(context: Context) : View(context) {
     private var selection: RectF? = null
     private var selectionIds: Set<String> = emptySet()
 
+    // pressure simulation
+    private var speedEma = 0f
+    private var pMin = 1f
+    private var pMax = 0f
+
+    // touch-pen state (capacitive stylus or finger writing)
+    private var penId = -1
+    private var twoFinger = false
+    private var tfStartX = 0f
+    private var tfStartY = 0f
+    private var tfLastX = 0f
+    private var tfLastY = 0f
+    private var tfStartTime = 0L
+    private var liveTravel = 0f
+    private class Palm(val x: Float, val y: Float, val t: Long)
+    private val palms = ArrayList<Palm>()
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        var stylusEvent = false
+        for (i in 0 until e.pointerCount) {
+            val tt = e.getToolType(i)
+            if (tt == MotionEvent.TOOL_TYPE_STYLUS || tt == MotionEvent.TOOL_TYPE_ERASER) stylusEvent = true
+        }
+        if (stylusEvent && !stylusSeen) { stylusSeen = true; onStylusDetected?.invoke() }
+
+        if (tool == Tool.PLAY) return handleTap(e)
+        if (stylusEvent) return handleStylus(e)
+        val fingersWrite = when (penMode) {
+            PenMode.SPEN -> false
+            PenMode.ANY_STYLUS -> true
+            PenMode.AUTO -> !stylusSeen
+        }
+        return if (fingersWrite) handleTouchPen(e) else handleTap(e)
+    }
+
+    /** Real active pen (S Pen / Wacom EMR): single pointer, hardware pressure, side button. */
+    private fun handleStylus(e: MotionEvent): Boolean {
         val toolType = e.getToolType(0)
-        val isPen = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
-        val writes = (isPen || !stylusOnly) && tool != Tool.PLAY
-
-        if (!writes) return handleTap(e)
-
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (Build.VERSION.SDK_INT >= 30) requestUnbufferedDispatch(e)
-                parent?.requestDisallowInterceptTouchEvent(true)
-                live.clear(); liveTimes.clear()
-                liveT0 = e.eventTime
-                liveErasing = tool == Tool.ERASER ||
-                    toolType == MotionEvent.TOOL_TYPE_ERASER ||
-                    (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
-                erasedThisGesture = false
-                liveAudio = recordingClock?.invoke()
-                if (tool != Tool.LASSO) clearSelection()
+                val buttonErase = toolType == MotionEvent.TOOL_TYPE_ERASER ||
+                    (e.buttonState and (MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY or MotionEvent.BUTTON_SECONDARY)) != 0
+                beginStroke(e, buttonErase, simulate = pressureMode == PressureMode.SIMULATED ||
+                    (pressureMode == PressureMode.AUTO && !realPressureSeen))
                 addPoint(e.x, e.y, e.pressure, e.eventTime)
             }
             MotionEvent.ACTION_MOVE -> {
@@ -297,10 +337,156 @@ class InkView(context: Context) : View(context) {
             }
             MotionEvent.ACTION_UP -> {
                 addPoint(e.x, e.y, e.pressure, e.eventTime)
+                // the pen reports genuinely varying pressure: trust it from now on
+                if (pMax - pMin > 0.12f) realPressureSeen = true
                 finishGesture()
             }
-            MotionEvent.ACTION_CANCEL -> { live.clear(); liveTimes.clear(); invalidate() }
+            MotionEvent.ACTION_CANCEL -> cancelLive()
         }
+        return true
+    }
+
+    /**
+     * Passive stylus or finger. Software palm rejection:
+     *  - wide contacts (touchMajor > palmPx) are palms and never ink
+     *  - when a palm lands, new touches near it are ignored and stray dots it just made are removed
+     *  - only one pointer inks; a second quick contact turns the gesture into a two-finger swipe/tap
+     *  - strokes the system cancels as palm (FLAG_CANCELED) are dropped
+     */
+    private fun handleTouchPen(e: MotionEvent): Boolean {
+        val now = e.eventTime
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                val i = e.actionIndex
+                val id = e.getPointerId(i)
+                val x = e.getX(i)
+                val y = e.getY(i)
+                if (contactSize(e, i) > palmPx) { notePalm(x, y, now); return true }
+                if (twoFinger) return true
+                if (penId == -1) {
+                    if (nearPalm(x, y, now)) return true
+                    penId = id
+                    liveTravel = 0f
+                    downX = x; downY = y
+                    beginStroke(e, false, simulate = pressureMode != PressureMode.OFF)
+                    addPoint(x, y, 0.6f, now)
+                } else if (now - liveT0 < 180 && liveTravel < 30f) {
+                    // second finger right away = two-finger gesture, not ink
+                    cancelLive()
+                    penId = -1
+                    twoFinger = true
+                    tfStartTime = now
+                    tfStartX = centroidX(e); tfStartY = centroidY(e)
+                    tfLastX = tfStartX; tfLastY = tfStartY
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (twoFinger) {
+                    if (e.pointerCount >= 2) { tfLastX = centroidX(e); tfLastY = centroidY(e) }
+                    return true
+                }
+                for (i in 0 until e.pointerCount) {
+                    if (e.getPointerId(i) != penId && contactSize(e, i) > palmPx) notePalm(e.getX(i), e.getY(i), now)
+                }
+                val idx = if (penId >= 0) e.findPointerIndex(penId) else -1
+                if (idx < 0) return true
+                if (contactSize(e, idx) > palmPx) {
+                    // what we thought was the pen grew into a palm
+                    notePalm(e.getX(idx), e.getY(idx), now)
+                    cancelLive(); penId = -1
+                    return true
+                }
+                for (h in 0 until e.historySize) {
+                    addPoint(e.getHistoricalX(idx, h), e.getHistoricalY(idx, h), 0.6f, e.getHistoricalEventTime(h))
+                }
+                addPoint(e.getX(idx), e.getY(idx), 0.6f, now)
+                liveTravel = hypot(e.getX(idx) - downX, e.getY(idx) - downY).coerceAtLeast(liveTravel)
+            }
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
+                val i = e.actionIndex
+                val id = e.getPointerId(i)
+                val canceled = Build.VERSION.SDK_INT >= 33 && (e.flags and MotionEvent.FLAG_CANCELED) != 0
+                if (twoFinger) {
+                    if (e.actionMasked == MotionEvent.ACTION_UP) {
+                        val dx = tfLastX - tfStartX
+                        val dy = tfLastY - tfStartY
+                        when {
+                            abs(dx) > 140f && abs(dx) > abs(dy) * 1.5f -> onSwipe?.invoke(if (dx < 0) 1 else -1)
+                            now - tfStartTime < 300 && hypot(dx, dy) < 30f -> onTwoFingerTap?.invoke()
+                        }
+                        twoFinger = false
+                    }
+                    return true
+                }
+                if (id == penId) {
+                    penId = -1
+                    if (canceled) { cancelLive(); return true }
+                    // a quick tap on one of Claude's margin notes opens it instead of making a dot
+                    if (liveTravel < 12f && now - liveT0 < 250 && tapAnnotation(e.getX(i), e.getY(i))) { cancelLive(); return true }
+                    addPoint(e.getX(i), e.getY(i), 0.6f, now)
+                    finishGesture()
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> { cancelLive(); penId = -1; twoFinger = false }
+        }
+        return true
+    }
+
+    private fun beginStroke(e: MotionEvent, buttonErase: Boolean, simulate: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) requestUnbufferedDispatch(e)
+        parent?.requestDisallowInterceptTouchEvent(true)
+        live.clear(); liveTimes.clear()
+        liveT0 = e.eventTime
+        liveErasing = tool == Tool.ERASER || buttonErase || (eraserLatched && tool == Tool.PEN)
+        liveSimulated = simulate
+        speedEma = 0f
+        pMin = 1f; pMax = 0f
+        erasedThisGesture = false
+        liveAudio = recordingClock?.invoke()
+        if (tool != Tool.LASSO) clearSelection()
+    }
+
+    private fun cancelLive() {
+        live.clear(); liveTimes.clear()
+        if (liveErasing && erasedThisGesture) changed()
+        liveErasing = false
+        invalidate()
+    }
+
+    private fun contactSize(e: MotionEvent, i: Int): Float = max(e.getTouchMajor(i), e.getTouchMinor(i))
+
+    private fun centroidX(e: MotionEvent): Float { var s = 0f; for (i in 0 until e.pointerCount) s += e.getX(i); return s / e.pointerCount }
+    private fun centroidY(e: MotionEvent): Float { var s = 0f; for (i in 0 until e.pointerCount) s += e.getY(i); return s / e.pointerCount }
+
+    private fun nearPalm(x: Float, y: Float, now: Long): Boolean {
+        palms.removeAll { now - it.t > 700 }
+        return palms.any { hypot(it.x - x, it.y - y) < palmPx * 2.5f }
+    }
+
+    private fun notePalm(x: Float, y: Float, now: Long) {
+        palms.add(Palm(x, y, now))
+        if (palms.size > 20) palms.removeAt(0)
+        // remove the little marks a palm leaves just before it's recognised
+        val cutoff = System.currentTimeMillis() - 500
+        val px = toPageX(x)
+        val py = toPageY(y)
+        val radius = palmPx * 4f / scale
+        val stray = strokes.filter { s ->
+            s.t0 >= cutoff && s.pts.size <= 3 * 12 && run {
+                val b = boundsOf(listOf(s))
+                hypot(b.centerX() - px, b.centerY() - py) < radius
+            }
+        }
+        if (stray.isNotEmpty()) {
+            snapshot()
+            strokes.removeAll(stray.toSet())
+            changed()
+        }
+    }
+
+    private fun tapAnnotation(x: Float, y: Float): Boolean {
+        val hit = annotationRects.entries.firstOrNull { it.value.contains(x, y) } ?: return false
+        annotations.firstOrNull { it.id == hit.key }?.let { onAnnotationTap?.invoke(it) }
         return true
     }
 
@@ -313,9 +499,43 @@ class InkView(context: Context) : View(context) {
         }
         val n = live.size
         if (n >= 3 && abs(live[n - 3] - px) < 0.4f && abs(live[n - 2] - py) < 0.4f) return
-        live.add(px); live.add(py); live.add(if (p <= 0f) 0.5f else p)
+        val pressure = when {
+            pressureMode == PressureMode.OFF && liveSimulated -> 0.6f
+            liveSimulated -> simulatedPressure(px, py, t - liveT0)
+            else -> if (p <= 0f) 0.5f else p
+        }
+        if (p > 0f) { pMin = min(pMin, p); pMax = max(pMax, p) }
+        live.add(px); live.add(py); live.add(pressure)
         liveTimes.add(t - liveT0)
         invalidate()
+    }
+
+    /**
+     * Fake pen pressure from speed, like a fountain pen: slow = heavier line, fast = lighter,
+     * plus a short taper in at the start (the end taper is added when the stroke finishes).
+     */
+    private fun simulatedPressure(px: Float, py: Float, tMs: Long): Float {
+        val n = live.size / 3
+        if (n == 0) return 0.45f
+        val lx = live[live.size - 3]
+        val ly = live[live.size - 2]
+        val dt = (tMs - liveTimes.last()).coerceAtLeast(1L).toFloat()
+        val v = hypot(px - lx, py - ly) / dt // page units per ms (~5 units per mm)
+        speedEma = if (n == 1) v else speedEma * 0.65f + v * 0.35f
+        var p = (1.0f - speedEma * 0.55f).coerceIn(0.32f, 1f)
+        val prev = live[live.size - 1]
+        p = prev * 0.6f + p * 0.4f
+        if (n < 4) p *= 0.6f + n * 0.1f
+        return p
+    }
+
+    private fun taperEnd() {
+        val n = live.size / 3
+        val k = min(5, n - 1)
+        for (j in 0 until k) {
+            val idx = (n - 1 - j) * 3 + 2
+            live[idx] = live[idx] * (0.35f + 0.65f * j / k)
+        }
     }
 
     private fun eraseAt(px: Float, py: Float) {
@@ -345,6 +565,11 @@ class InkView(context: Context) : View(context) {
         if (tool == Tool.LASSO) {
             finishLasso()
         } else if (live.size >= 3) {
+            if (scratchErase && tool == Tool.PEN && scratchOut()) {
+                live.clear(); liveTimes.clear(); invalidate()
+                return
+            }
+            if (liveSimulated) taperEnd()
             snapshot()
             val audio = liveAudio
             val s = Stroke(
@@ -362,6 +587,51 @@ class InkView(context: Context) : View(context) {
         }
         live.clear(); liveTimes.clear()
         invalidate()
+    }
+
+    /**
+     * Scribble back and forth over ink to erase it (no eraser button needed).
+     * Needs several direction reversals in a compact area and must actually cover existing ink.
+     */
+    private fun scratchOut(): Boolean {
+        val n = live.size / 3
+        if (n < 14) return false
+        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE; var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        var length = 0f
+        var reversals = 0
+        var lastSign = 0
+        for (i in 0 until n) {
+            val x = live[i * 3]; val y = live[i * 3 + 1]
+            minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            if (i > 0) {
+                val dx = x - live[(i - 1) * 3]
+                val dy = y - live[(i - 1) * 3 + 1]
+                length += hypot(dx, dy)
+                val main = if (maxX - minX >= maxY - minY) dx else dy
+                if (abs(main) > 1.5f) {
+                    val sign = if (main > 0) 1 else -1
+                    if (lastSign != 0 && sign != lastSign) reversals++
+                    lastSign = sign
+                }
+            }
+        }
+        val w = maxX - minX
+        val h = maxY - minY
+        val diag = hypot(w, h)
+        if (reversals < 5 || diag > 320f || diag < 12f || length < diag * 3.5f) return false
+        val box = RectF(minX - 6f, minY - 6f, maxX + 6f, maxY + 6f)
+        val covered = strokes.filter { s ->
+            val m = s.pts.size / 3
+            var inside = 0
+            var j = 0
+            while (j < s.pts.size) { if (box.contains(s.pts[j], s.pts[j + 1])) inside++; j += 3 }
+            m > 0 && inside * 2 >= m
+        }
+        if (covered.isEmpty()) return false
+        snapshot()
+        strokes.removeAll(covered.toSet())
+        changed()
+        return true
     }
 
     private fun finishLasso() {
@@ -400,10 +670,7 @@ class InkView(context: Context) : View(context) {
                     return true
                 }
                 if (hypot(dx, dy) > 24f) return true
-                annotationRects.entries.firstOrNull { it.value.contains(e.x, e.y) }?.let { hit ->
-                    annotations.firstOrNull { it.id == hit.key }?.let { onAnnotationTap?.invoke(it) }
-                    return true
-                }
+                if (tapAnnotation(e.x, e.y)) return true
                 if (tool == Tool.PLAY) {
                     val px = toPageX(e.x)
                     val py = toPageY(e.y)
@@ -435,6 +702,9 @@ class InkView(context: Context) : View(context) {
     }
 
     companion object {
+        /** Once a pen reports real, varying pressure we stop simulating it (AUTO mode). */
+        @Volatile var realPressureSeen = false
+
         fun boundsOf(list: List<Stroke>): RectF {
             var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
             for (s in list) {

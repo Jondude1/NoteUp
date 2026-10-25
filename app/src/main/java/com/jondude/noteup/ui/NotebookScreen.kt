@@ -61,6 +61,7 @@ import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.PAGE_H
 import com.jondude.noteup.data.PAGE_W
 import com.jondude.noteup.data.Page
+import com.jondude.noteup.data.PenKeys
 import com.jondude.noteup.data.Recording
 import com.jondude.noteup.data.Settings
 import com.jondude.noteup.data.Store
@@ -151,7 +152,18 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     LaunchedEffect(nb.template) { ink.template = nb.template }
     LaunchedEffect(tool) { ink.tool = tool; if (tool != Tool.LASSO) selection = null }
     LaunchedEffect(penWidth) { ink.penWidth = penWidth }
-    LaunchedEffect(Settings.stylusOnly) { ink.stylusOnly = Settings.stylusOnly }
+    LaunchedEffect(Settings.penMode, Settings.pressureMode, Settings.palmMm, Settings.scratchErase, Settings.stylusSeen) {
+        ink.penMode = Settings.penMode
+        ink.pressureMode = Settings.pressureMode
+        ink.palmPx = Settings.palmMm * ctx.resources.displayMetrics.xdpi / 25.4f
+        ink.scratchErase = Settings.scratchErase
+        ink.stylusSeen = Settings.stylusSeen
+    }
+    // stylus button that arrives as a key: toggles eraser on/off
+    val firstPresses = remember { PenKeys.presses }
+    LaunchedEffect(PenKeys.presses) {
+        if (PenKeys.presses != firstPresses) tool = if (tool == Tool.ERASER) Tool.PEN else Tool.ERASER
+    }
     DisposableEffect(Unit) {
         ink.recordingClock = { Recorder.clock() }
         onDispose { ed.flush(); ink.recordingClock = null }
@@ -281,6 +293,8 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         ink.onStrokesChanged = { s -> ed.update { it.copy(strokes = s, convertedText = null) } }
         ink.onLasso = { ids, b -> selection = ids to b }
         ink.onSwipe = { dir -> turn(dir) }
+        ink.onTwoFingerTap = { ink.undo() }
+        ink.onStylusDetected = { Settings.stylusSeen = true; Settings.save() }
         ink.onAnnotationTap = { tappedNote = it }
         ink.onSeek = { recId, ms -> Store.recording(recId)?.let { Player.play(it, max(0L, ms - 1500L)) } }
     }
