@@ -58,6 +58,18 @@ class InkView(context: Context) : View(context) {
     /** Two-finger tap. */
     var onTwoFingerTap: (() -> Unit)? = null
 
+    /** Hand rest: touches below this line (fraction of view height, or -1 = off) never write. */
+    var handRestFrac = -1f
+        set(v) { field = v; invalidate() }
+    var onHandRestMoved: ((Float) -> Unit)? = null
+    private val handRestY: Float get() = if (handRestFrac < 0f) -1f else handRestFrac * height
+    private var draggingRest = false
+    private val restPaint = Paint().apply { color = Color.argb(28, 0, 0, 0) }
+    private val restLine = Paint().apply { color = Color.BLACK; strokeWidth = 3f }
+    private val restText = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(90, 90, 90); textSize = 28f; typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+    }
+
     /** While recording, returns (recordingId, current audio ms) so strokes get linked to the audio. */
     var recordingClock: (() -> Pair<String, Long>?)? = null
 
@@ -267,6 +279,13 @@ class InkView(context: Context) : View(context) {
         selection?.let {
             canvas.drawRect(vx(it.left) - 8, vy(it.top) - 8, vx(it.right) + 8, vy(it.bottom) + 8, lassoPaint)
         }
+        val ry = handRestY
+        if (ry >= 0f) {
+            canvas.drawRect(0f, ry, width.toFloat(), height.toFloat(), restPaint)
+            canvas.drawLine(0f, ry, width.toFloat(), ry, restLine)
+            canvas.drawRect(width - 150f, ry - 22f, width - 30f, ry + 22f, restLine)
+            canvas.drawText("HAND REST — drag the tab", 24f, ry + 40f, restText)
+        }
     }
 
     // ---- input ----
@@ -301,6 +320,16 @@ class InkView(context: Context) : View(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        // drag the hand-rest tab (right edge of its line)
+        val ry = handRestY
+        if (ry >= 0f && (draggingRest || (e.actionMasked == MotionEvent.ACTION_DOWN && e.x > width - 190f && abs(e.y - ry) < 60f))) {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { draggingRest = true; parent?.requestDisallowInterceptTouchEvent(true) }
+                MotionEvent.ACTION_MOVE -> handRestFrac = (e.y / height).coerceIn(0.25f, 0.95f)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { draggingRest = false; onHandRestMoved?.invoke(handRestFrac) }
+            }
+            return true
+        }
         var stylusEvent = false
         for (i in 0 until e.pointerCount) {
             val tt = e.getToolType(i)
@@ -309,7 +338,14 @@ class InkView(context: Context) : View(context) {
         if (stylusEvent && !stylusSeen) { stylusSeen = true; onStylusDetected?.invoke() }
 
         if (tool == Tool.PLAY) return handleTap(e)
-        if (stylusEvent) return handleStylus(e)
+        if (stylusEvent || stylusId != -1) return handleStylus(e)
+        // pen is hovering or just lifted: this touch is the hand holding it
+        if (stylusSeen && e.eventTime - penActiveAt < 700) { ignoringHand = e.actionMasked != MotionEvent.ACTION_UP && e.actionMasked != MotionEvent.ACTION_CANCEL; return true }
+        if (ignoringHand) { if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) ignoringHand = false; return true }
+        // a palm (wide contact) or anything starting in the hand rest is ignored for the whole touch
+        if (e.actionMasked == MotionEvent.ACTION_DOWN && (contactSize(e, 0) > palmPx || (handRestY >= 0f && e.y > handRestY))) {
+            ignoringHand = true; return true
+        }
         val fingersWrite = when (penMode) {
             PenMode.SPEN -> false
             PenMode.ANY_STYLUS -> true
@@ -318,84 +354,120 @@ class InkView(context: Context) : View(context) {
         return if (fingersWrite) handleTouchPen(e) else handleTap(e)
     }
 
-    /** Real active pen (S Pen / Wacom EMR): single pointer, hardware pressure, side button. */
+    /**
+     * Real active pen (S Pen / Wacom EMR). The palm can be touching the glass at the same time,
+     * so the pen is found by tool type in every event and all finger contacts are ignored.
+     */
+    private var stylusId = -1
+    private var ignoringHand = false
+
+    private fun stylusIndex(e: MotionEvent): Int {
+        for (i in 0 until e.pointerCount) {
+            val tt = e.getToolType(i)
+            if (tt == MotionEvent.TOOL_TYPE_STYLUS || tt == MotionEvent.TOOL_TYPE_ERASER) return i
+        }
+        return -1
+    }
+
     private fun handleStylus(e: MotionEvent): Boolean {
-        val toolType = e.getToolType(0)
+        penActiveAt = e.eventTime
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                val buttonErase = toolType == MotionEvent.TOOL_TYPE_ERASER ||
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                val i = e.actionIndex
+                val tt = e.getToolType(i)
+                if (tt != MotionEvent.TOOL_TYPE_STYLUS && tt != MotionEvent.TOOL_TYPE_ERASER) return true // palm landing
+                if (stylusId != -1) return true
+                // the palm may have started a stroke a moment ago; drop it
+                if (penId != -1) { cancelLive(); penId = -1 }
+                stylusId = e.getPointerId(i)
+                val buttonErase = tt == MotionEvent.TOOL_TYPE_ERASER ||
                     (e.buttonState and (MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY or MotionEvent.BUTTON_SECONDARY)) != 0
                 beginStroke(e, buttonErase, simulate = pressureMode == PressureMode.SIMULATED ||
                     (pressureMode == PressureMode.AUTO && !realPressureSeen))
-                addPoint(e.x, e.y, e.pressure, e.eventTime)
+                addPoint(e.getX(i), e.getY(i), e.getPressure(i), e.eventTime)
             }
             MotionEvent.ACTION_MOVE -> {
+                val idx = if (stylusId >= 0) e.findPointerIndex(stylusId) else -1
+                if (idx < 0) return true
                 for (h in 0 until e.historySize) {
-                    addPoint(e.getHistoricalX(h), e.getHistoricalY(h), e.getHistoricalPressure(h), e.getHistoricalEventTime(h))
+                    addPoint(e.getHistoricalX(idx, h), e.getHistoricalY(idx, h), e.getHistoricalPressure(idx, h), e.getHistoricalEventTime(h))
                 }
-                addPoint(e.x, e.y, e.pressure, e.eventTime)
+                addPoint(e.getX(idx), e.getY(idx), e.getPressure(idx), e.eventTime)
             }
-            MotionEvent.ACTION_UP -> {
-                addPoint(e.x, e.y, e.pressure, e.eventTime)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                val i = e.actionIndex
+                if (e.getPointerId(i) != stylusId) return true
+                stylusId = -1
+                // the hand is still on the glass: ignore it until it lifts
+                if (e.actionMasked == MotionEvent.ACTION_POINTER_UP) ignoringHand = true
+                addPoint(e.getX(i), e.getY(i), e.getPressure(i), e.eventTime)
                 // the pen reports genuinely varying pressure: trust it from now on
                 if (pMax - pMin > 0.12f) realPressureSeen = true
                 finishGesture()
             }
-            MotionEvent.ACTION_CANCEL -> cancelLive()
+            MotionEvent.ACTION_CANCEL -> { stylusId = -1; cancelLive() }
         }
         return true
     }
 
+    /** Last time the S Pen touched or hovered; fingers are ignored around that (EMR palm rejection). */
+    private var penActiveAt = 0L
+
+    override fun onHoverEvent(e: MotionEvent): Boolean {
+        val tt = e.getToolType(0)
+        if (tt == MotionEvent.TOOL_TYPE_STYLUS || tt == MotionEvent.TOOL_TYPE_ERASER) {
+            penActiveAt = e.eventTime
+            if (!stylusSeen) { stylusSeen = true; onStylusDetected?.invoke() }
+        }
+        return super.onHoverEvent(e)
+    }
+
     /**
-     * Passive stylus or finger. Software palm rejection:
-     *  - wide contacts (touchMajor > palmPx) are palms and never ink
-     *  - when a palm lands, new touches near it are ignored and stray dots it just made are removed
-     *  - only one pointer inks; a second quick contact turns the gesture into a two-finger swipe/tap
-     *  - strokes the system cancels as palm (FLAG_CANCELED) are dropped
+     * Passive stylus or finger, with software palm rejection. The pen is assumed to be the
+     * small contact that is highest on the screen (your hand rests below the tip):
+     *  - every time a contact lands, the pen is re-chosen; if it changes, the stroke in progress
+     *    (which came from the palm) is thrown away
+     *  - contacts below the pen, wider than the palm threshold, or inside the hand rest are palm
+     *  - a contact that sits still for a while (a resting palm) never becomes ink
+     *  - marks a palm left in the last moment are erased when the palm is recognised
+     *  - two small contacts landing together side by side = two-finger swipe / tap
      */
     private fun handleTouchPen(e: MotionEvent): Boolean {
         val now = e.eventTime
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val i = e.actionIndex
-                val id = e.getPointerId(i)
                 val x = e.getX(i)
                 val y = e.getY(i)
-                if (contactSize(e, i) > palmPx) { notePalm(x, y, now); return true }
+                if (e.actionMasked == MotionEvent.ACTION_DOWN) { firstDownTime = now; twoFinger = false }
+                if (contactSize(e, i) > palmPx) notePalm(x, y, now)
                 if (twoFinger) return true
-                if (penId == -1) {
-                    if (nearPalm(x, y, now)) return true
-                    penId = id
-                    liveTravel = 0f
-                    downX = x; downY = y
-                    beginStroke(e, false, simulate = pressureMode != PressureMode.OFF)
-                    addPoint(x, y, 0.6f, now)
-                } else if (now - liveT0 < 180 && liveTravel < 30f) {
-                    // second finger right away = two-finger gesture, not ink
-                    cancelLive()
-                    penId = -1
+
+                // two fingers landing together, side by side, not moving yet = gesture
+                if (e.pointerCount == 2 && now - firstDownTime < 150 && liveTravel < 25f &&
+                    abs(e.getY(0) - e.getY(1)) < 200f && contactSize(e, 0) <= palmPx && contactSize(e, 1) <= palmPx
+                ) {
+                    cancelLive(); penId = -1
                     twoFinger = true
                     tfStartTime = now
                     tfStartX = centroidX(e); tfStartY = centroidY(e)
                     tfLastX = tfStartX; tfLastY = tfStartY
+                    return true
                 }
+                choosePen(e, now)
             }
             MotionEvent.ACTION_MOVE -> {
                 if (twoFinger) {
                     if (e.pointerCount >= 2) { tfLastX = centroidX(e); tfLastY = centroidY(e) }
                     return true
                 }
+                var palmNow = false
                 for (i in 0 until e.pointerCount) {
-                    if (e.getPointerId(i) != penId && contactSize(e, i) > palmPx) notePalm(e.getX(i), e.getY(i), now)
+                    if (contactSize(e, i) > palmPx) { notePalm(e.getX(i), e.getY(i), now); palmNow = true }
                 }
+                if (palmNow) choosePen(e, now)
                 val idx = if (penId >= 0) e.findPointerIndex(penId) else -1
                 if (idx < 0) return true
-                if (contactSize(e, idx) > palmPx) {
-                    // what we thought was the pen grew into a palm
-                    notePalm(e.getX(idx), e.getY(idx), now)
-                    cancelLive(); penId = -1
-                    return true
-                }
                 for (h in 0 until e.historySize) {
                     addPoint(e.getHistoricalX(idx, h), e.getHistoricalY(idx, h), 0.6f, e.getHistoricalEventTime(h))
                 }
@@ -420,16 +492,53 @@ class InkView(context: Context) : View(context) {
                 }
                 if (id == penId) {
                     penId = -1
-                    if (canceled) { cancelLive(); return true }
-                    // a quick tap on one of Claude's margin notes opens it instead of making a dot
-                    if (liveTravel < 12f && now - liveT0 < 250 && tapAnnotation(e.getX(i), e.getY(i))) { cancelLive(); return true }
-                    addPoint(e.getX(i), e.getY(i), 0.6f, now)
-                    finishGesture()
+                    val duration = now - liveT0
+                    when {
+                        canceled -> cancelLive()
+                        // quick tap on a margin note opens it
+                        liveTravel < 12f && duration < 250 && tapAnnotation(e.getX(i), e.getY(i)) -> cancelLive()
+                        // something that sat nearly still for a while is a resting hand, not a dot
+                        liveTravel < 10f && duration > 220 -> cancelLive()
+                        else -> { addPoint(e.getX(i), e.getY(i), 0.6f, now); finishGesture() }
+                    }
                 }
             }
             MotionEvent.ACTION_CANCEL -> { cancelLive(); penId = -1; twoFinger = false }
         }
         return true
+    }
+
+    private var firstDownTime = 0L
+
+    /** Picks which contact is the pen; drops the in-progress stroke if it belonged to a palm. */
+    private fun choosePen(e: MotionEvent, now: Long) {
+        var best = -1
+        var bestY = Float.MAX_VALUE
+        for (i in 0 until e.pointerCount) {
+            val x = e.getX(i)
+            val y = e.getY(i)
+            if (contactSize(e, i) > palmPx) continue
+            if (handRestY >= 0f && y > handRestY) continue
+            if (nearPalm(x, y, now)) continue
+            if (y < bestY) { bestY = y; best = i }
+        }
+        // everything that isn't the pen and sits below it is palm
+        if (best >= 0) {
+            for (i in 0 until e.pointerCount) {
+                if (i != best && e.getY(i) > bestY + 20f) notePalm(e.getX(i), e.getY(i), now)
+            }
+        }
+        val newId = if (best >= 0) e.getPointerId(best) else -1
+        if (newId == penId) return
+        if (penId != -1) cancelLive() // the old "pen" was really a palm
+        penId = newId
+        if (best < 0) return
+        val x = e.getX(best)
+        val y = e.getY(best)
+        liveTravel = 0f
+        downX = x; downY = y
+        beginStroke(e, false, simulate = pressureMode != PressureMode.OFF)
+        addPoint(x, y, 0.6f, now)
     }
 
     private fun beginStroke(e: MotionEvent, buttonErase: Boolean, simulate: Boolean) {
@@ -464,21 +573,22 @@ class InkView(context: Context) : View(context) {
     }
 
     private fun notePalm(x: Float, y: Float, now: Long) {
+        val fresh = palms.none { now - it.t < 400 && hypot(it.x - x, it.y - y) < palmPx * 2f }
         palms.add(Palm(x, y, now))
-        if (palms.size > 20) palms.removeAt(0)
-        // remove the little marks a palm leaves just before it's recognised
-        val cutoff = System.currentTimeMillis() - 500
+        if (palms.size > 30) palms.removeAt(0)
+        if (!fresh) return
+        // remove the marks a palm leaves just before it's recognised
+        val cutoff = System.currentTimeMillis() - 700
         val px = toPageX(x)
         val py = toPageY(y)
-        val radius = palmPx * 4f / scale
+        val radius = max(palmPx * 5f, 160f) / scale
         val stray = strokes.filter { s ->
-            s.t0 >= cutoff && s.pts.size <= 3 * 12 && run {
+            s.t0 >= cutoff && s.pts.size <= 3 * 40 && run {
                 val b = boundsOf(listOf(s))
-                hypot(b.centerX() - px, b.centerY() - py) < radius
+                hypot(b.centerX() - px, b.centerY() - py) < radius && max(b.width(), b.height()) < 60f
             }
         }
         if (stray.isNotEmpty()) {
-            snapshot()
             strokes.removeAll(stray.toSet())
             changed()
         }

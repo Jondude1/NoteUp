@@ -39,6 +39,8 @@ object Settings {
     var learningPenKey by mutableStateOf(false)
     var scratchErase by mutableStateOf(true)
     var stylusSeen by mutableStateOf(false)
+    /** Hand rest line as a fraction of canvas height, or -1 when off. */
+    var handRest by mutableStateOf(-1f)
     var refreshFlash by mutableStateOf(true)
     var defaultTemplate by mutableStateOf(Template.LINED)
 
@@ -61,6 +63,7 @@ object Settings {
         penKey = prefs.getInt("penKey", -1)
         scratchErase = prefs.getBoolean("scratchErase", true)
         stylusSeen = prefs.getBoolean("stylusSeen", false)
+        handRest = prefs.getFloat("handRest", -1f)
         refreshFlash = prefs.getBoolean("refreshFlash", true)
         defaultTemplate = enumOr(prefs.getString("template", null), Template.LINED)
     }
@@ -84,6 +87,7 @@ object Settings {
             .putInt("penKey", penKey)
             .putBoolean("scratchErase", scratchErase)
             .putBoolean("stylusSeen", stylusSeen)
+            .putFloat("handRest", handRest)
             .putBoolean("refreshFlash", refreshFlash)
             .putString("template", defaultTemplate.name)
             .apply()

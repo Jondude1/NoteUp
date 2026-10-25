@@ -159,6 +159,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         ink.scratchErase = Settings.scratchErase
         ink.stylusSeen = Settings.stylusSeen
     }
+    LaunchedEffect(Settings.handRest) { ink.handRestFrac = Settings.handRest }
     // stylus button that arrives as a key: toggles eraser on/off
     val firstPresses = remember { PenKeys.presses }
     LaunchedEffect(PenKeys.presses) {
@@ -294,6 +295,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         ink.onLasso = { ids, b -> selection = ids to b }
         ink.onSwipe = { dir -> turn(dir) }
         ink.onTwoFingerTap = { ink.undo() }
+        ink.onHandRestMoved = { f -> Settings.handRest = f; Settings.save() }
         ink.onStylusDetected = { Settings.stylusSeen = true; Settings.save() }
         ink.onAnnotationTap = { tappedNote = it }
         ink.onSeek = { recId, ms -> Store.recording(recId)?.let { Player.play(it, max(0L, ms - 1500L)) } }
@@ -322,6 +324,10 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             ToolItem("Undo") { ink.undo() }
             ToolItem("Redo") { ink.redo() }
             ToolItem("Paper") { dialog = "template" }
+            ToolItem("Hand rest", on = Settings.handRest >= 0f) {
+                Settings.handRest = if (Settings.handRest >= 0f) -1f else 0.72f
+                Settings.save()
+            }
             ToolItem("Sync ▶", on = tool == Tool.PLAY) { tool = if (tool == Tool.PLAY) Tool.PEN else Tool.PLAY }
             val rec = Recorder.active
             ToolItem(if (rec != null) "■ ${fmtTime(Recorder.elapsedMs)}" else "● Rec", on = rec != null) {
