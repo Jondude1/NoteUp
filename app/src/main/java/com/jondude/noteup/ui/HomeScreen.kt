@@ -28,6 +28,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,7 +43,10 @@ import androidx.core.content.ContextCompat
 import com.jondude.noteup.ai.AiClient
 import com.jondude.noteup.ai.Twists
 import com.jondude.noteup.audio.Recorder
+import com.jondude.noteup.data.Brief
 import com.jondude.noteup.data.Documents
+import com.jondude.noteup.data.Sync
+import com.jondude.noteup.data.TaskItem
 import com.jondude.noteup.data.Indexer
 import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.Settings
@@ -54,7 +58,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-enum class Tab(val label: String) { NOTES("Notes"), RECORDINGS("Recordings"), TASKS("Tasks"), ASK("Ask"), SETTINGS("Settings") }
+enum class Tab(val label: String) { TODAY("Today"), NOTES("Notes"), RECORDINGS("Recordings"), TASKS("Tasks"), ASK("Ask"), SETTINGS("Settings") }
 
 private val dateFmt = SimpleDateFormat("MMM d", Locale.US)
 private val longDate = SimpleDateFormat("EEEE, MMMM d", Locale.US)
@@ -90,6 +94,7 @@ fun HomeScreen(
         VRule(Modifier.fillMaxHeight())
         Box(Modifier.weight(1f).fillMaxHeight()) {
             when (tab) {
+                Tab.TODAY -> TodayTab(onOpenNotebook)
                 Tab.NOTES -> Shelf(onOpenNotebook, onOpenRecording)
                 Tab.RECORDINGS -> RecordingsList(onOpenRecording)
                 Tab.TASKS -> TasksTab()
@@ -107,6 +112,81 @@ private fun Header(title: String, action: (@Composable () -> Unit)? = null) {
         action?.invoke()
     }
     HRule()
+}
+
+fun dueLabel(iso: String): String = try {
+    SimpleDateFormat("EEE MMM d", Locale.US).format(SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(iso)!!).let { "due $it" }
+} catch (e: Exception) { "due $iso" }
+
+// ---------------- Today (daily brief) ----------------
+
+@Composable
+private fun TodayTab(onOpenPage: (String, Int) -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var brief by remember { mutableStateOf(Brief.cached()) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var calOk by remember { mutableStateOf(Brief.hasCalendarPermission(ctx)) }
+    val calPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { calOk = it }
+    val events = remember(calOk) { if (Settings.briefCalendar) Brief.eventsToday(ctx) else emptyList() }
+
+    fun make() {
+        busy = true; error = null
+        scope.launch {
+            try { brief = Brief.generate(ctx) } catch (e: Exception) { error = e.message }
+            busy = false
+        }
+    }
+    LaunchedEffect(Unit) {
+        if (brief == null && AiClient.configured(Settings.backend)) make()
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Header("Today") { InkButton(if (busy) "Writing…" else "Refresh brief", small = true, enabled = !busy) { make() } }
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp)) {
+            SectionLabel("Calendar")
+            when {
+                !Settings.briefCalendar -> T("Calendar is turned off in Settings.", color = Ink.Gray, italic = true)
+                !calOk -> InkButton("Show my calendar here", small = true) { calPerm.launch(android.Manifest.permission.READ_CALENDAR) }
+                events.isEmpty() -> T("Nothing scheduled today.", color = Ink.Gray, italic = true)
+                else -> events.forEach { T(Brief.eventLine(it), size = 17.sp, modifier = Modifier.padding(vertical = 3.dp)) }
+            }
+            val due = Brief.dueTasks()
+            if (due.isNotEmpty()) {
+                SectionLabel("Due")
+                due.forEach { t ->
+                    Row(Modifier.fillMaxWidth().inkClick { Store.toggleTask(t.id) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(22.dp).border(Ink.Rule, Ink.Black))
+                        Spacer(Modifier.width(12.dp))
+                        T(t.text, size = 17.sp, modifier = Modifier.weight(1f))
+                        T(if (t.due!! < Brief.today()) "overdue" else "today", size = 12.sp, sans = true, bold = true)
+                    }
+                }
+            }
+            SectionLabel("Brief")
+            when {
+                busy && brief == null -> T("Reading yesterday's notes and your tasks…", italic = true, color = Ink.Gray)
+                error != null -> T(error!!, italic = true)
+                brief != null -> T(brief!!.text, size = 17.sp)
+                !AiClient.configured(Settings.backend) -> T("Add Claude or your local AI in Settings to get a written brief each morning.", italic = true, color = Ink.Gray)
+                else -> T("Tap Refresh brief.", italic = true, color = Ink.Gray)
+            }
+            val recent = remember(Store.pagesVersion) {
+                Store.allPages().filter { it.third.strokes.isNotEmpty() }.sortedByDescending { it.third.updatedAt }.take(5)
+            }
+            if (recent.isNotEmpty()) {
+                SectionLabel("Pick up where you left off")
+                recent.forEach { (nb, i, p) ->
+                    Column(Modifier.fillMaxWidth().inkClick { onOpenPage(nb.id, i) }.padding(vertical = 8.dp)) {
+                        T("${nb.title} · page ${i + 1}${p.title?.let { " — $it" } ?: ""}", size = 16.sp, bold = true, maxLines = 1)
+                        T(dateFmt.format(Date(p.updatedAt)), size = 12.sp, sans = true, color = Ink.Gray)
+                    }
+                }
+            }
+            Spacer(Modifier.height(40.dp))
+        }
+    }
 }
 
 // ---------------- Notes shelf ----------------
@@ -317,7 +397,15 @@ private fun RecordingsList(onOpen: (String) -> Unit) {
 
 @Composable
 private fun TasksTab() {
+    val ctx = LocalContext.current
     var text by remember { mutableStateOf("") }
+    fun pickDue(t: TaskItem) {
+        val c = java.util.Calendar.getInstance()
+        t.due?.let { d -> try { c.time = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(d)!! } catch (_: Exception) {} }
+        android.app.DatePickerDialog(ctx, { _, y, m, d ->
+            Store.updateTask(t.copy(due = "%04d-%02d-%02d".format(y, m + 1, d)))
+        }, c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH), c.get(java.util.Calendar.DAY_OF_MONTH)).show()
+    }
     Column(Modifier.fillMaxSize()) {
         Header("Tasks") {
             if (Store.tasks.any { it.done }) InkButton("Clear done", small = true) {
@@ -330,12 +418,12 @@ private fun TasksTab() {
             InkButton("Add", on = true) { if (text.isNotBlank()) { Store.addTasks(listOf(text), null); text = "" } }
         }
         if (Store.tasks.isEmpty()) {
-            T("Action items from meeting minutes land here automatically.", italic = true, color = Ink.Gray,
+            T("Action items from meeting minutes land here automatically, with due dates when one was mentioned. Long-press a task to set a date; 📅 adds it to your calendar.", italic = true, color = Ink.Gray,
                 modifier = Modifier.padding(horizontal = 28.dp))
         }
         LazyColumn(Modifier.fillMaxSize()) {
-            items(Store.tasks.sortedBy { it.done }, key = { it.id }) { t ->
-                Row(Modifier.fillMaxWidth().inkClick { Store.toggleTask(t.id) }.padding(horizontal = 28.dp, vertical = 12.dp),
+            items(Store.tasks.sortedWith(compareBy<TaskItem> { it.done }.thenBy { it.due ?: "9999" }), key = { it.id }) { t ->
+                Row(Modifier.fillMaxWidth().inkClick(onLongClick = { pickDue(t) }) { Store.toggleTask(t.id) }.padding(horizontal = 28.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(26.dp).border(Ink.Rule, Ink.Black).background(if (t.done) Ink.Black else Ink.White),
                         contentAlignment = Alignment.Center) {
@@ -344,8 +432,11 @@ private fun TasksTab() {
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
                         T(t.text, size = 17.sp, color = if (t.done) Ink.Gray else Ink.Black)
-                        t.source?.let { T("from $it", size = 12.sp, sans = true, color = Ink.Gray) }
+                        val overdue = !t.done && t.due != null && t.due < Brief.today()
+                        val meta = listOfNotNull(t.due?.let { dueLabel(it) + if (overdue) " — overdue" else "" }, t.source?.let { "from $it" })
+                        if (meta.isNotEmpty()) T(meta.joinToString(" · "), size = 12.sp, sans = true, bold = overdue, color = if (overdue) Ink.Black else Ink.Gray)
                     }
+                    ToolItem(if (t.due == null) "Due…" else "📅") { if (t.due == null) pickDue(t) else Brief.addToCalendar(ctx, t) }
                     ToolItem("×") { Store.deleteTask(t.id) }
                 }
                 HRule(thickness = 1.dp)
@@ -438,6 +529,34 @@ private fun AskTab() {
 // ---------------- Settings ----------------
 
 @Composable
+private fun SyncSettings() {
+    val scope = rememberCoroutineScope()
+    fun s(block: () -> Unit) { block(); Settings.save() }
+    SectionLabel("Sync between tablets (WebDAV / Nextcloud)")
+    InkField(Settings.syncUrl, { v -> s { Settings.syncUrl = v } }, hint = "https://cloud.example.com/remote.php/dav/files/you")
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        InkField(Settings.syncUser, { v -> s { Settings.syncUser = v } }, Modifier.weight(1f), hint = "User name")
+        InkField(Settings.syncPass, { v -> s { Settings.syncPass = v } }, Modifier.weight(1f), hint = "App password", secret = true)
+    }
+    Toggle("Sync automatically", Settings.autoSync, { v -> s { Settings.autoSync = v } },
+        note = "When the app opens and about a minute after you stop writing")
+    Toggle("Include recordings' audio", Settings.syncAudio, { v -> s { Settings.syncAudio = v } },
+        note = "Transcripts and minutes always sync; audio files are large")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        InkButton(if (Sync.running) "Syncing…" else "Sync now", small = true, enabled = !Sync.running && Sync.configured) {
+            scope.launch { Sync.runNow() }
+        }
+        Spacer(Modifier.width(12.dp))
+        Sync.status?.let { T(it, size = 14.sp, italic = true) }
+    }
+    T("Set this up the same way on both tablets. Notes go in a NoteUp folder on your server. In Nextcloud, make an app password under Settings → Security.",
+        size = 13.sp, color = Ink.Gray, modifier = Modifier.padding(top = 6.dp))
+    Toggle("Calendar in daily brief", Settings.briefCalendar, { v -> s { Settings.briefCalendar = v } })
+}
+
+
+@Composable
 private fun SettingsTab() {
     val scope = rememberCoroutineScope()
     var test by remember { mutableStateOf<String?>(null) }
@@ -483,6 +602,8 @@ private fun SettingsTab() {
                 Spacer(Modifier.width(12.dp))
                 test?.let { T(it, size = 14.sp, italic = true) }
             }
+
+            SyncSettings()
 
             SectionLabel("Transcription")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

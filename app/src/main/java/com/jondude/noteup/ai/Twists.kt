@@ -23,7 +23,9 @@ DECISIONS
 - ... (or "- none")
 
 ACTIONS
-- [owner if known] task (due date if mentioned)
+- [owner if known] task [due: YYYY-MM-DD]   ← add the [due: ...] part only when a date or day is mentioned
+
+Today is ${java.text.SimpleDateFormat("EEEE yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())}; turn "Friday", "next week" etc. into dates.
 
 Use the handwritten notes to see what the note-taker thought mattered most; weight those topics.
 
@@ -135,4 +137,45 @@ Reply with JSON only, using pixel coordinates of this image:
         val b = reply.lastIndexOf('}')
         return if (a >= 0 && b > a) reply.substring(a, b + 1) else null
     }
+
+    /** ACTIONS lines with an optional [due: yyyy-MM-dd]. */
+    fun parseActionsWithDue(minutes: String): List<Pair<String, String?>> = parseActions(minutes).map { line ->
+        val m = Regex("""\[due:\s*(\d{4}-\d{2}-\d{2})\]""", RegexOption.IGNORE_CASE).find(line)
+        val text = line.replace(Regex("""\s*\[due:[^\]]*\]""", RegexOption.IGNORE_CASE), "").trim()
+        text to m?.groupValues?.get(1)
+    }
+
+    /** Morning brief. */
+    fun brief(material: String) = """
+Write my daily brief from the material below. Plain text, short lines.
+
+Format:
+TODAY
+(one or two sentences: what kind of day it is and the single most important thing)
+
+SCHEDULE
+- time — event   (skip this section if nothing is scheduled)
+
+FOCUS
+- the 3 most important open tasks, overdue first
+
+FROM YESTERDAY
+- 2-4 bullets of what was decided, learned or left unfinished in my notes and meetings
+
+$material
+""".trimIndent()
+
+    /** Split a transcript into speaker turns. Input lines are "index: text". */
+    fun speakers(numbered: String) = """
+This is a meeting transcript, split into numbered chunks that may contain more than one speaker.
+Work out who is speaking. Use real names when people introduce themselves or are addressed by name;
+otherwise "Speaker 1", "Speaker 2", ... Keep the same label for the same person throughout.
+
+Reply with JSON only:
+{"turns":[{"chunk":0,"speaker":"Speaker 1","text":"exact words from that chunk"}, ...]}
+Every word of every chunk must appear exactly once, in order. Split a chunk into several turns when the speaker changes inside it.
+
+TRANSCRIPT:
+$numbered
+""".trimIndent()
 }

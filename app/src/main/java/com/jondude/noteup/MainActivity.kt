@@ -27,11 +27,17 @@ import com.jondude.noteup.ui.RecordingScreen
 import com.jondude.noteup.ui.Tab
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        com.jondude.noteup.data.Sync.syncSoon()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
         Settings.init(applicationContext)
         com.jondude.noteup.data.Indexer.start()
+        Store.onLocalChange = { com.jondude.noteup.data.Sync.schedule() }
         setContent {
             val recording = Recorder.active != null
             LaunchedEffect(recording) {
@@ -52,8 +58,8 @@ class MainActivity : ComponentActivity() {
 /** Screen route encoded as a string so it survives rotation: "home:NOTES", "nb:<id>:<page>", "rec:<id>". */
 @Composable
 private fun App() {
-    var route by rememberSaveable { mutableStateOf("home:NOTES") }
-    var lastTab by rememberSaveable { mutableStateOf("NOTES") }
+    var route by rememberSaveable { mutableStateOf("home:TODAY") }
+    var lastTab by rememberSaveable { mutableStateOf("TODAY") }
     val parts = route.split(":")
 
     fun home() { route = "home:$lastTab" }
@@ -82,7 +88,7 @@ private fun App() {
             )
         }
         else -> {
-            val tab = runCatching { Tab.valueOf(parts.getOrElse(1) { "NOTES" }) }.getOrDefault(Tab.NOTES)
+            val tab = runCatching { Tab.valueOf(parts.getOrElse(1) { "TODAY" }) }.getOrDefault(Tab.TODAY)
             HomeScreen(
                 tab = tab,
                 onTab = { lastTab = it.name; route = "home:${it.name}" },
