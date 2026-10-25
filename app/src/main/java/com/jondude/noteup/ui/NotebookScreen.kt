@@ -61,7 +61,6 @@ import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.PAGE_H
 import com.jondude.noteup.data.PAGE_W
 import com.jondude.noteup.data.Page
-import com.jondude.noteup.data.PenKeys
 import com.jondude.noteup.data.Recording
 import com.jondude.noteup.data.Settings
 import com.jondude.noteup.data.Store
@@ -152,19 +151,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     LaunchedEffect(nb.template) { ink.template = nb.template }
     LaunchedEffect(tool) { ink.tool = tool; if (tool != Tool.LASSO) selection = null }
     LaunchedEffect(penWidth) { ink.penWidth = penWidth }
-    LaunchedEffect(Settings.penMode, Settings.pressureMode, Settings.palmMm, Settings.scratchErase, Settings.stylusSeen) {
-        ink.penMode = Settings.penMode
-        ink.pressureMode = Settings.pressureMode
-        ink.palmPx = Settings.palmMm * ctx.resources.displayMetrics.xdpi / 25.4f
-        ink.scratchErase = Settings.scratchErase
-        ink.stylusSeen = Settings.stylusSeen
-    }
-    LaunchedEffect(Settings.handRest) { ink.handRestFrac = Settings.handRest }
-    // stylus button that arrives as a key: toggles eraser on/off
-    val firstPresses = remember { PenKeys.presses }
-    LaunchedEffect(PenKeys.presses) {
-        if (PenKeys.presses != firstPresses) tool = if (tool == Tool.ERASER) Tool.PEN else Tool.ERASER
-    }
+    LaunchedEffect(Settings.stylusOnly) { ink.stylusOnly = Settings.stylusOnly }
     DisposableEffect(Unit) {
         ink.recordingClock = { Recorder.clock() }
         onDispose { ed.flush(); ink.recordingClock = null }
@@ -294,9 +281,6 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         ink.onStrokesChanged = { s -> ed.update { it.copy(strokes = s, convertedText = null) } }
         ink.onLasso = { ids, b -> selection = ids to b }
         ink.onSwipe = { dir -> turn(dir) }
-        ink.onTwoFingerTap = { ink.undo() }
-        ink.onHandRestMoved = { f -> Settings.handRest = f; Settings.save() }
-        ink.onStylusDetected = { Settings.stylusSeen = true; Settings.save() }
         ink.onAnnotationTap = { tappedNote = it }
         ink.onSeek = { recId, ms -> Store.recording(recId)?.let { Player.play(it, max(0L, ms - 1500L)) } }
     }
@@ -324,10 +308,6 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             ToolItem("Undo") { ink.undo() }
             ToolItem("Redo") { ink.redo() }
             ToolItem("Paper") { dialog = "template" }
-            ToolItem("Hand rest", on = Settings.handRest >= 0f) {
-                Settings.handRest = if (Settings.handRest >= 0f) -1f else 0.72f
-                Settings.save()
-            }
             ToolItem("Sync ▶", on = tool == Tool.PLAY) { tool = if (tool == Tool.PLAY) Tool.PEN else Tool.PLAY }
             val rec = Recorder.active
             ToolItem(if (rec != null) "■ ${fmtTime(Recorder.elapsedMs)}" else "● Rec", on = rec != null) {

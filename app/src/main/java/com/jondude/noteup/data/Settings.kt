@@ -9,10 +9,6 @@ import androidx.compose.runtime.setValue
 enum class AiBackend { CLAUDE, LOCAL }
 enum class SttEngine { ON_DEVICE, WHISPER }
 
-/** AUTO: fingers write until a real S Pen is seen, then fingers only navigate. */
-enum class PenMode { AUTO, SPEN, ANY_STYLUS }
-enum class PressureMode { AUTO, SIMULATED, OFF }
-
 /** App settings, backed by private SharedPreferences and exposed as Compose state. */
 object Settings {
     private lateinit var prefs: SharedPreferences
@@ -30,17 +26,7 @@ object Settings {
     var whisperModel by mutableStateOf("whisper-1")
     var language by mutableStateOf("en-US")
 
-    var penMode by mutableStateOf(PenMode.AUTO)
-    var pressureMode by mutableStateOf(PressureMode.AUTO)
-    /** Contacts wider than this are treated as a palm. */
-    var palmMm by mutableStateOf(7f)
-    /** Key code a stylus button sends (learned in Settings), or -1. */
-    var penKey by mutableStateOf(-1)
-    var learningPenKey by mutableStateOf(false)
-    var scratchErase by mutableStateOf(true)
-    var stylusSeen by mutableStateOf(false)
-    /** Hand rest line as a fraction of canvas height, or -1 when off. */
-    var handRest by mutableStateOf(-1f)
+    var stylusOnly by mutableStateOf(true)
     var refreshFlash by mutableStateOf(true)
     var defaultTemplate by mutableStateOf(Template.LINED)
 
@@ -57,13 +43,7 @@ object Settings {
         whisperUrl = prefs.getString("whisperUrl", whisperUrl) ?: whisperUrl
         whisperModel = prefs.getString("whisperModel", whisperModel) ?: whisperModel
         language = prefs.getString("language", language) ?: language
-        penMode = enumOr(prefs.getString("penMode", null), PenMode.AUTO)
-        pressureMode = enumOr(prefs.getString("pressureMode", null), PressureMode.AUTO)
-        palmMm = prefs.getFloat("palmMm", 7f)
-        penKey = prefs.getInt("penKey", -1)
-        scratchErase = prefs.getBoolean("scratchErase", true)
-        stylusSeen = prefs.getBoolean("stylusSeen", false)
-        handRest = prefs.getFloat("handRest", -1f)
+        stylusOnly = prefs.getBoolean("stylusOnly", true)
         refreshFlash = prefs.getBoolean("refreshFlash", true)
         defaultTemplate = enumOr(prefs.getString("template", null), Template.LINED)
     }
@@ -81,13 +61,7 @@ object Settings {
             .putString("whisperUrl", whisperUrl.trim().trimEnd('/'))
             .putString("whisperModel", whisperModel.trim())
             .putString("language", language.trim())
-            .putString("penMode", penMode.name)
-            .putString("pressureMode", pressureMode.name)
-            .putFloat("palmMm", palmMm)
-            .putInt("penKey", penKey)
-            .putBoolean("scratchErase", scratchErase)
-            .putBoolean("stylusSeen", stylusSeen)
-            .putFloat("handRest", handRest)
+            .putBoolean("stylusOnly", stylusOnly)
             .putBoolean("refreshFlash", refreshFlash)
             .putString("template", defaultTemplate.name)
             .apply()
@@ -95,9 +69,4 @@ object Settings {
 
     private inline fun <reified E : Enum<E>> enumOr(v: String?, d: E): E =
         try { if (v == null) d else enumValueOf<E>(v) } catch (e: Exception) { d }
-}
-
-/** Counts presses of a stylus button that arrive as key events (most passive/BT styluses). */
-object PenKeys {
-    var presses by mutableStateOf(0)
 }

@@ -1,7 +1,6 @@
 package com.jondude.noteup
 
 import android.os.Bundle
-import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -18,7 +17,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.jondude.noteup.audio.Recorder
-import com.jondude.noteup.data.PenKeys
 import com.jondude.noteup.data.Settings
 import com.jondude.noteup.data.Store
 import com.jondude.noteup.ui.FlashOverlay
@@ -47,30 +45,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-    }
-
-    /**
-     * Some styluses send their button as a key press (often a media or volume key).
-     * Settings → "Learn pen button" records which one; pressing it then toggles the eraser.
-     */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val code = event.keyCode
-        if (code == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event)
-        if (Settings.learningPenKey) {
-            if (event.action == KeyEvent.ACTION_DOWN) {
-                Settings.penKey = code
-                Settings.learningPenKey = false
-                Settings.save()
-            }
-            return true
-        }
-        val stylusKey = code == KeyEvent.KEYCODE_STYLUS_BUTTON_PRIMARY || code == KeyEvent.KEYCODE_STYLUS_BUTTON_SECONDARY ||
-            code == KeyEvent.KEYCODE_STYLUS_BUTTON_TERTIARY || code == KeyEvent.KEYCODE_STYLUS_BUTTON_TAIL
-        if (stylusKey || (Settings.penKey != -1 && code == Settings.penKey)) {
-            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) PenKeys.presses++
-            return true
-        }
-        return super.dispatchKeyEvent(event)
     }
 }
 

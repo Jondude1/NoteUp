@@ -423,9 +423,9 @@ private fun SettingsTab() {
             Spacer(Modifier.height(8.dp))
             InkField(Settings.language, { v -> s { Settings.language = v } }, hint = "Language (en-US)")
 
-            PenSettingsSection()
-
-            SectionLabel("Display")
+            SectionLabel("Writing")
+            Toggle("Pen only", Settings.stylusOnly, { v -> s { Settings.stylusOnly = v } },
+                note = "Palm rejection: fingers swipe pages and tap, only the S Pen writes. Hold the pen button to erase.")
             Toggle("E-ink refresh flash", Settings.refreshFlash, { v -> s { Settings.refreshFlash = v } },
                 note = "A quick black blink when you turn pages, like a real e-ink screen")
             SectionLabel("Default paper")
