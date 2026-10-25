@@ -56,6 +56,7 @@ import com.jondude.noteup.ai.AiClient
 import com.jondude.noteup.ai.Twists
 import com.jondude.noteup.audio.Player
 import com.jondude.noteup.audio.Recorder
+import com.jondude.noteup.data.Documents
 import com.jondude.noteup.data.MarginNote
 import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.PAGE_H
@@ -135,6 +136,8 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     val ink = remember { InkView(ctx) }
     var tool by remember { mutableStateOf(Tool.PEN) }
     var penWidth by remember { mutableStateOf(3.5f) }
+    var inkColor by remember { mutableIntStateOf(0) }
+    var exportStatus by remember { mutableStateOf<String?>(null) }
     var selection by remember { mutableStateOf<Pair<Set<String>, RectF>?>(null) }
     var panel by remember { mutableStateOf(Panel()) }
     var question by remember { mutableStateOf("") }
@@ -146,8 +149,12 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         ed.load(pageId)
         val p = ed.page!!
         ink.setContent(p.strokes, p.annotations)
+        ink.texts = p.texts
         selection = null
+        ink.background = null
+        ink.background = withContext(Dispatchers.IO) { Documents.loadBackground(p.background) }
     }
+    LaunchedEffect(inkColor) { ink.inkColor = inkColor }
     LaunchedEffect(nb.template) { ink.template = nb.template }
     LaunchedEffect(tool) { ink.tool = tool; if (tool != Tool.LASSO) selection = null }
     LaunchedEffect(penWidth) { ink.penWidth = penWidth }
@@ -197,7 +204,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
 
     fun targetStrokes() = ed.page?.let { p ->
         val sel = selection
-        if (sel != null) p.strokes.filter { it.id in sel.first } else p.strokes
+        (if (sel != null) p.strokes.filter { it.id in sel.first } else p.strokes).filter { !it.marker }
     } ?: emptyList()
 
     fun askClaude() {
@@ -303,6 +310,11 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                 if (tool == Tool.PEN) penWidth = when (penWidth) { 2.2f -> 3.5f; 3.5f -> 6f; else -> 2.2f }
                 tool = Tool.PEN
             }
+            ToolItem(listOf("Ink ■", "Ink ▩", "Ink □")[inkColor]) {
+                inkColor = (inkColor + 1) % 3
+                tool = Tool.PEN
+            }
+            ToolItem("Marker", on = tool == Tool.MARKER) { tool = Tool.MARKER }
             ToolItem("Eraser", on = tool == Tool.ERASER) { tool = Tool.ERASER }
             ToolItem("Lasso", on = tool == Tool.LASSO) { tool = Tool.LASSO }
             ToolItem("Undo") { ink.undo() }
@@ -322,6 +334,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                 panel = if (panel.kind == PanelKind.CLAUDE) Panel() else Panel(PanelKind.CLAUDE, "Claude")
             }
             ToolItem("Pages") { dialog = "pages" }
+            ToolItem("Share") { dialog = "export" }
         }
         HRule()
 
@@ -392,6 +405,40 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                     T(if (t == nb.template) "■  " else "□  ", sans = true)
                     T(t.name.lowercase().replaceFirstChar { it.uppercase() }, size = 18.sp)
                 }
+            }
+        }
+        "export" -> InkDialog("Share / export", onDismiss = { dialog = null; exportStatus = null }) {
+            fun go(label: String, mime: String, make: suspend () -> java.io.File) {
+                exportStatus = "$label…"
+                scope.launch {
+                    exportStatus = try {
+                        ed.flush()
+                        val f = make()
+                        Documents.share(ctx, f, mime)
+                        null
+                    } catch (e: Exception) { "Export failed: ${e.message}" }
+                    if (exportStatus == null) dialog = null
+                }
+            }
+            val busy = exportStatus != null && !exportStatus!!.startsWith("Export failed")
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                InkButton("This page — PDF", Modifier.fillMaxWidth(), enabled = !busy) {
+                    go("Making PDF", "application/pdf") { Documents.pdf(ctx, nb, listOf(safeIndex)) }
+                }
+                InkButton("This page — image", Modifier.fillMaxWidth(), enabled = !busy) {
+                    go("Making image", "image/png") { Documents.pagePng(ctx, nb, safeIndex) }
+                }
+                InkButton("Whole notebook — PDF", Modifier.fillMaxWidth(), enabled = !busy) {
+                    go("Making PDF", "application/pdf") {
+                        Documents.pdf(ctx, nb, nb.pageIds.indices.toList()) { i, n -> exportStatus = "Making PDF… page $i of $n" }
+                    }
+                }
+                InkButton("Whole notebook — text (Markdown)", Modifier.fillMaxWidth(), enabled = !busy) {
+                    go("Reading handwriting", "text/markdown") {
+                        Documents.markdown(ctx, nb) { i, n -> exportStatus = "Reading handwriting… page $i of $n" }
+                    }
+                }
+                exportStatus?.let { T(it, italic = true, color = Ink.Gray, size = 14.sp) }
             }
         }
         "pages" -> PagesDialog(nb, safeIndex, onPick = { ed.flush(); index = it; dialog = null }, onDelete = {
@@ -562,7 +609,7 @@ private fun PagesDialog(nb: Notebook, current: Int, onPick: (Int) -> Unit, onDel
             itemsIndexed(nb.pageIds) { i, pid ->
                 val thumb by produceState<ImageBitmap?>(null, pid) {
                     value = withContext(Dispatchers.Default) {
-                        PageRenderer.render(Store.page(pid, nb.id).strokes, null, 220).asImageBitmap()
+                        Documents.renderThumb(nb, Store.page(pid, nb.id), 220).asImageBitmap()
                     }
                 }
                 Column(Modifier.inkClick { onPick(i) }) {

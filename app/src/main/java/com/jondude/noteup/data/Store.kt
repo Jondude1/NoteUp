@@ -1,7 +1,10 @@
 package com.jondude.noteup.data
 
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,62 +16,100 @@ import java.io.File
 /**
  * Plain JSON files in app storage. Lists are Compose snapshot state, so screens update
  * automatically; writes go to disk in the background.
+ *
+ * Layout (mirrored as-is by sync):
+ *   notebooks.json, recordings.json, tasks.json, tombstones.json, page-stamps.json
+ *   pages/<id>.json, backgrounds/<file>, audio/<file>
  */
 object Store {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private lateinit var root: File
+    lateinit var root: File
+        private set
 
     val notebooks = mutableStateListOf<Notebook>()
     val recordings = mutableStateListOf<Recording>()
     val tasks = mutableStateListOf<TaskItem>()
 
+    /** id -> time deleted, so a delete on one tablet wins over the copy on the other. */
+    val tombstones = HashMap<String, Long>()
+    /** page id -> updatedAt, so sync can tell which pages changed without opening them all. */
+    val pageStamps = HashMap<String, Long>()
+
+    /** Bumped whenever a page's saved content changes (search results, thumbnails). */
+    var pagesVersion by mutableIntStateOf(0)
+        private set
+
+    /** Called after any local change (used to schedule sync). */
+    var onLocalChange: (() -> Unit)? = null
+
     private val pageCache = HashMap<String, Page>()
 
     val audioDir: File get() = File(root, "audio").apply { mkdirs() }
+    val bgDir: File get() = File(root, "backgrounds").apply { mkdirs() }
 
     fun init(ctx: Context) {
         if (::root.isInitialized) return
         root = File(ctx.filesDir, "noteup").apply { mkdirs() }
         File(root, "pages").mkdirs()
-        notebooks.addAll(read<List<Notebook>>("notebooks.json") ?: emptyList())
-        recordings.addAll(read<List<Recording>>("recordings.json") ?: emptyList())
-        tasks.addAll(read<List<TaskItem>>("tasks.json") ?: emptyList())
+        reloadLists()
         if (notebooks.isEmpty()) createNotebook("My first notebook", Template.LINED)
     }
 
-    private inline fun <reified T> read(name: String): T? = try {
+    /** Re-reads the list files from disk (after sync). */
+    fun reloadLists() {
+        notebooks.clear(); recordings.clear(); tasks.clear()
+        notebooks.addAll(read<List<Notebook>>("notebooks.json") ?: emptyList())
+        recordings.addAll(read<List<Recording>>("recordings.json") ?: emptyList())
+        tasks.addAll(read<List<TaskItem>>("tasks.json") ?: emptyList())
+        tombstones.clear(); tombstones.putAll(read<Map<String, Long>>("tombstones.json") ?: emptyMap())
+        pageStamps.clear(); pageStamps.putAll(read<Map<String, Long>>("page-stamps.json") ?: emptyMap())
+        pageCache.clear()
+        pagesVersion++
+    }
+
+    inline fun <reified T> read(name: String): T? = try {
         val f = File(root, name)
         if (f.exists()) json.decodeFromString<T>(f.readText()) else null
     } catch (e: Exception) {
         null
     }
 
+    fun writeNow(name: String, text: String) {
+        val f = File(root, name)
+        f.parentFile?.mkdirs()
+        val tmp = File(f.parentFile, f.name + ".tmp")
+        tmp.writeText(text)
+        tmp.renameTo(f)
+    }
+
     private fun writeAsync(name: String, text: String) {
-        io.launch {
-            val f = File(root, name)
-            val tmp = File(root, "$name.tmp")
-            tmp.parentFile?.mkdirs()
-            tmp.writeText(text)
-            tmp.renameTo(f)
-        }
+        io.launch { synchronized(this@Store) { writeNow(name, text) } }
+        onLocalChange?.invoke()
     }
 
     private fun saveNotebooks() = writeAsync("notebooks.json", json.encodeToString(notebooks.toList()))
     private fun saveRecordings() = writeAsync("recordings.json", json.encodeToString(recordings.toList()))
     private fun saveTasks() = writeAsync("tasks.json", json.encodeToString(tasks.toList()))
+    private fun saveTombstones() = writeAsync("tombstones.json", json.encodeToString(tombstones.toMap()))
+    private fun savePageStamps() = writeAsync("page-stamps.json", json.encodeToString(pageStamps.toMap()))
+
+    private fun bury(id: String) { tombstones[id] = System.currentTimeMillis(); saveTombstones() }
 
     // ---- notebooks ----
     fun notebook(id: String): Notebook? = notebooks.firstOrNull { it.id == id }
 
-    fun createNotebook(title: String, template: Template): Notebook {
+    fun createNotebook(title: String, template: Template, backgrounds: List<String?> = listOf(null)): Notebook {
         val nb = Notebook(title = title, template = template)
-        val first = Page(notebookId = nb.id)
-        savePage(first)
-        val withPage = nb.copy(pageIds = listOf(first.id))
-        notebooks.add(0, withPage)
+        val ids = backgrounds.map { bg ->
+            val p = Page(notebookId = nb.id, background = bg)
+            savePage(p)
+            p.id
+        }
+        val withPages = nb.copy(pageIds = ids)
+        notebooks.add(0, withPages)
         saveNotebooks()
-        return withPage
+        return withPages
     }
 
     fun updateNotebook(nb: Notebook) {
@@ -79,14 +120,24 @@ object Store {
 
     fun deleteNotebook(id: String) {
         val nb = notebook(id) ?: return
-        nb.pageIds.forEach { pid -> pageCache.remove(pid); File(root, "pages/$pid.json").delete() }
+        nb.pageIds.forEach { pid -> removePageFiles(pid) }
         notebooks.removeAll { it.id == id }
+        bury(id)
         saveNotebooks()
     }
 
-    fun addPage(nbId: String, afterIndex: Int): Page {
+    private fun removePageFiles(pid: String) {
+        val p = pageCache.remove(pid) ?: read<Page>("pages/$pid.json")
+        p?.background?.let { File(bgDir, it).delete() }
+        File(root, "pages/$pid.json").delete()
+        pageStamps.remove(pid)
+        bury(pid)
+        savePageStamps()
+    }
+
+    fun addPage(nbId: String, afterIndex: Int, background: String? = null): Page {
         val nb = notebook(nbId)!!
-        val p = Page(notebookId = nbId)
+        val p = Page(notebookId = nbId, background = background)
         savePage(p)
         val ids = nb.pageIds.toMutableList()
         ids.add((afterIndex + 1).coerceIn(0, ids.size), p.id)
@@ -97,8 +148,7 @@ object Store {
     fun deletePage(nbId: String, pageId: String) {
         val nb = notebook(nbId) ?: return
         if (nb.pageIds.size <= 1) return
-        pageCache.remove(pageId)
-        File(root, "pages/$pageId.json").delete()
+        removePageFiles(pageId)
         updateNotebook(nb.copy(pageIds = nb.pageIds - pageId))
     }
 
@@ -110,47 +160,67 @@ object Store {
         return p
     }
 
-    fun savePage(p: Page) {
+    /** Saves a page; [touch] stamps it as edited now (false for background updates like indexing). */
+    fun savePage(p0: Page, touch: Boolean = true) {
+        val p = if (touch) p0.copy(updatedAt = System.currentTimeMillis()) else p0
         pageCache[p.id] = p
+        pageStamps[p.id] = p.updatedAt
         writeAsync("pages/${p.id}.json", json.encodeToString(p))
-        notebook(p.notebookId)?.let { nb ->
+        savePageStamps()
+        pagesVersion++
+        if (touch) notebook(p.notebookId)?.let { nb ->
             val i = notebooks.indexOf(nb)
             if (i >= 0) notebooks[i] = nb.copy(updatedAt = System.currentTimeMillis())
             saveNotebooks()
         }
     }
 
+    /** Every page as (notebook, index, page). Loads pages from disk as needed. */
+    fun allPages(): List<Triple<Notebook, Int, Page>> =
+        notebooks.toList().flatMap { nb -> nb.pageIds.mapIndexed { i, pid -> Triple(nb, i, page(pid, nb.id)) } }
+
     // ---- recordings ----
     fun recording(id: String): Recording? = recordings.firstOrNull { it.id == id }
 
     fun upsertRecording(r: Recording) {
+        val stamped = r.copy(updatedAt = System.currentTimeMillis())
         val i = recordings.indexOfFirst { it.id == r.id }
-        if (i >= 0) recordings[i] = r else recordings.add(0, r)
+        if (i >= 0) recordings[i] = stamped else recordings.add(0, stamped)
         saveRecordings()
     }
 
     fun deleteRecording(id: String) {
         recording(id)?.let { File(audioDir, it.fileName).delete() }
         recordings.removeAll { it.id == id }
+        bury(id)
         saveRecordings()
     }
 
     fun audioFile(r: Recording): File = File(audioDir, r.fileName)
 
     // ---- tasks ----
-    fun addTasks(texts: List<String>, source: String?) {
-        texts.filter { it.isNotBlank() }.forEach { tasks.add(0, TaskItem(text = it.trim(), source = source)) }
+    fun addTasks(texts: List<String>, source: String?) = addTasksWithDue(texts.map { it to null }, source)
+
+    fun addTasksWithDue(items: List<Pair<String, String?>>, source: String?) {
+        items.filter { it.first.isNotBlank() }.forEach { (text, due) ->
+            tasks.add(0, TaskItem(text = text.trim(), source = source, due = due, updatedAt = System.currentTimeMillis()))
+        }
+        saveTasks()
+    }
+
+    fun updateTask(t: TaskItem) {
+        val i = tasks.indexOfFirst { it.id == t.id }
+        if (i >= 0) tasks[i] = t.copy(updatedAt = System.currentTimeMillis())
         saveTasks()
     }
 
     fun toggleTask(id: String) {
-        val i = tasks.indexOfFirst { it.id == id }
-        if (i >= 0) tasks[i] = tasks[i].copy(done = !tasks[i].done)
-        saveTasks()
+        tasks.firstOrNull { it.id == id }?.let { updateTask(it.copy(done = !it.done)) }
     }
 
     fun deleteTask(id: String) {
         tasks.removeAll { it.id == id }
+        bury(id)
         saveTasks()
     }
 }

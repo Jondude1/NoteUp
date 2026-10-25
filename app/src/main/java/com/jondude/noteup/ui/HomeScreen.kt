@@ -41,6 +41,7 @@ import androidx.core.content.ContextCompat
 import com.jondude.noteup.ai.AiClient
 import com.jondude.noteup.ai.Twists
 import com.jondude.noteup.audio.Recorder
+import com.jondude.noteup.data.Documents
 import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.Settings
 import com.jondude.noteup.data.Store
@@ -110,10 +111,32 @@ private fun Header(title: String, action: (@Composable () -> Unit)? = null) {
 
 @Composable
 private fun Shelf(onOpen: (String) -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var creating by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Notebook?>(null) }
+    var importing by remember { mutableStateOf<String?>(null) }
+    val pickPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            importing = "Opening PDF…"
+            scope.launch {
+                try {
+                    val nb = Documents.importPdf(ctx, uri) { i, n -> importing = "Importing page $i of $n…" }
+                    importing = null
+                    onOpen(nb.id)
+                } catch (e: Exception) {
+                    importing = "Couldn't import: ${e.message}"
+                }
+            }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
-        Header("Notebooks") { InkButton("+ New notebook") { creating = true } }
+        Header("Notebooks") {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                InkButton("Import PDF") { pickPdf.launch(arrayOf("application/pdf")) }
+                InkButton("+ New notebook") { creating = true }
+            }
+        }
         LazyVerticalGrid(
             GridCells.Adaptive(170.dp),
             Modifier.fillMaxSize().padding(horizontal = 20.dp),
@@ -143,6 +166,16 @@ private fun Shelf(onOpen: (String) -> Unit) {
             item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                 T("Long-press a notebook to rename or delete it.", size = 13.sp, color = Ink.Gray, italic = true,
                     modifier = Modifier.padding(vertical = 24.dp))
+            }
+        }
+    }
+
+    importing?.let { msg ->
+        InkDialog("Import PDF", onDismiss = { if (msg.startsWith("Couldn't")) importing = null }) {
+            T(msg)
+            if (msg.startsWith("Couldn't")) {
+                Spacer(Modifier.height(12.dp))
+                InkButton("OK") { importing = null }
             }
         }
     }

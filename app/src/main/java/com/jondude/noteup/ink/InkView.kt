@@ -20,6 +20,7 @@ import android.view.View
 import com.jondude.noteup.data.MarginNote
 import com.jondude.noteup.data.PAGE_H
 import com.jondude.noteup.data.PAGE_W
+import com.jondude.noteup.data.PageText
 import com.jondude.noteup.data.Stroke
 import com.jondude.noteup.data.Template
 import kotlin.math.abs
@@ -27,7 +28,7 @@ import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
-enum class Tool { PEN, ERASER, LASSO, PLAY }
+enum class Tool { PEN, MARKER, ERASER, LASSO, PLAY }
 
 /**
  * The writing surface. Plain View (not Compose) so S Pen input goes straight to a Canvas
@@ -43,6 +44,16 @@ class InkView(context: Context) : View(context) {
         set(v) { field = v; if (v != Tool.LASSO) clearSelection(); invalidate() }
     var penWidth = 3.5f
     var stylusOnly = true
+    /** 0 = black, 1 = dark gray, 2 = light gray */
+    var inkColor = 0
+    /** Hold the pen still at the end of a stroke to snap it to a clean line or shape. */
+    var shapeSnap = true
+
+    /** Imported PDF page drawn behind the ink. */
+    var background: Bitmap? = null
+        set(v) { field = v; invalidateCache() }
+    var texts: List<PageText> = emptyList()
+        set(v) { field = v; invalidateCache() }
 
     /** While recording, returns (recordingId, current audio ms) so strokes get linked to the audio. */
     var recordingClock: (() -> Pair<String, Long>?)? = null
@@ -90,6 +101,17 @@ class InkView(context: Context) : View(context) {
         changed()
     }
 
+    /** Swap some strokes for others in one undoable step (diagram cleanup). */
+    fun replaceStrokes(remove: Set<String>, add: List<Stroke>) {
+        snapshot()
+        strokes.removeAll { it.id in remove }
+        strokes.addAll(add)
+        clearSelection()
+        changed()
+    }
+
+    fun currentStrokes(): List<Stroke> = strokes.toList()
+
     fun deleteStrokes(ids: Set<String>) {
         if (ids.isEmpty()) return
         snapshot()
@@ -124,6 +146,21 @@ class InkView(context: Context) : View(context) {
         strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
     }
     private val fadedPaint = Paint(inkPaint).apply { color = Color.rgb(190, 190, 190) }
+    private val grayPaints = arrayOf(
+        inkPaint,
+        Paint(inkPaint).apply { color = Color.rgb(85, 85, 85) },
+        Paint(inkPaint).apply { color = Color.rgb(160, 160, 160) },
+    )
+    private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeCap = Paint.Cap.SQUARE; strokeJoin = Paint.Join.ROUND
+        color = Color.argb(70, 0, 0, 0)
+    }
+    private val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK; typeface = Typeface.create(Typeface.SERIF, Typeface.NORMAL)
+    }
+    private val bgPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+
+    private fun paintFor(s: Stroke) = grayPaints[s.color.coerceIn(0, 2)]
     private val rulePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(200, 200, 200); strokeWidth = 1.5f }
     private val marginPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(150, 150, 150); strokeWidth = 2f }
     private val edgePaint = Paint().apply { color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 2f }
@@ -154,13 +191,24 @@ class InkView(context: Context) : View(context) {
         c.drawColor(outsidePaint.color)
         val page = RectF(vx(0f), vy(0f), vx(PAGE_W), vy(PAGE_H))
         c.drawRect(page, Paint().apply { color = Color.WHITE })
+        background?.let { bmp ->
+            // fit the PDF page inside the paper, keeping its shape
+            val s = min(page.width() / bmp.width, page.height() / bmp.height)
+            val w = bmp.width * s
+            val h = bmp.height * s
+            val dst = RectF(page.centerX() - w / 2, page.centerY() - h / 2, page.centerX() + w / 2, page.centerY() + h / 2)
+            c.drawBitmap(bmp, null, dst, bgPaint)
+        }
         drawTemplate(c)
         c.drawRect(page, edgePaint)
         val ph = playhead
+        for (s in strokes) if (s.marker) drawMarker(c, s.pts, s.width)
         for (s in strokes) {
+            if (s.marker) continue
             val faded = ph != null && (s.recId != ph.first || s.audioMs > ph.second)
-            drawStroke(c, s.pts, s.width, if (faded) fadedPaint else inkPaint)
+            drawStroke(c, s.pts, s.width, if (faded) fadedPaint else paintFor(s))
         }
+        drawTexts(c)
         drawAnnotations(c)
         cacheDirty = false
     }
@@ -213,6 +261,31 @@ class InkView(context: Context) : View(context) {
         }
     }
 
+    private fun drawMarker(c: Canvas, pts: FloatArray, width: Float) {
+        if (pts.size < 3) return
+        val path = Path()
+        path.moveTo(vx(pts[0]), vy(pts[1]))
+        var i = 3
+        while (i < pts.size) { path.lineTo(vx(pts[i]), vy(pts[i + 1])); i += 3 }
+        if (pts.size == 3) path.lineTo(vx(pts[0]) + 1f, vy(pts[1]))
+        markerPaint.strokeWidth = width * scale
+        c.drawPath(path, markerPaint)
+    }
+
+    private fun drawTexts(c: Canvas) {
+        for (t in texts) {
+            textPaint.textSize = t.size * scale
+            val w = max(40f, t.w * scale).toInt()
+            val layout = StaticLayout.Builder.obtain(t.text, 0, t.text.length, textPaint, w)
+                .setAlignment(if (t.centered) Layout.Alignment.ALIGN_CENTER else Layout.Alignment.ALIGN_NORMAL)
+                .build()
+            c.save()
+            c.translate(vx(t.x), vy(t.y) - if (t.centered) layout.height / 2f else 0f)
+            layout.draw(c)
+            c.restore()
+        }
+    }
+
     private fun drawAnnotations(c: Canvas) {
         annotationRects.clear()
         notePaint.textSize = 22f * scale
@@ -246,8 +319,10 @@ class InkView(context: Context) : View(context) {
                 var i = 3
                 while (i < live.size) { p.lineTo(vx(live[i]), vy(live[i + 1])); i += 3 }
                 canvas.drawPath(p, lassoPaint)
+            } else if (!liveErasing && tool == Tool.MARKER) {
+                drawMarker(canvas, live.toFloatArray(), MARKER_WIDTH)
             } else if (!liveErasing) {
-                drawStroke(canvas, live.toFloatArray(), penWidth, inkPaint)
+                drawStroke(canvas, live.toFloatArray(), penWidth, grayPaints[inkColor.coerceIn(0, 2)])
             }
         }
         selection?.let {
@@ -286,22 +361,48 @@ class InkView(context: Context) : View(context) {
                     (e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0
                 erasedThisGesture = false
                 liveAudio = recordingClock?.invoke()
+                liveSnapped = false
                 if (tool != Tool.LASSO) clearSelection()
                 addPoint(e.x, e.y, e.pressure, e.eventTime)
+                armHold(e.x, e.y)
             }
             MotionEvent.ACTION_MOVE -> {
                 for (h in 0 until e.historySize) {
                     addPoint(e.getHistoricalX(h), e.getHistoricalY(h), e.getHistoricalPressure(h), e.getHistoricalEventTime(h))
                 }
                 addPoint(e.x, e.y, e.pressure, e.eventTime)
+                if (hypot(e.x - holdX, e.y - holdY) > 10f) armHold(e.x, e.y)
             }
             MotionEvent.ACTION_UP -> {
+                removeCallbacks(holdCheck)
                 addPoint(e.x, e.y, e.pressure, e.eventTime)
                 finishGesture()
             }
-            MotionEvent.ACTION_CANCEL -> { live.clear(); liveTimes.clear(); invalidate() }
+            MotionEvent.ACTION_CANCEL -> { removeCallbacks(holdCheck); live.clear(); liveTimes.clear(); invalidate() }
         }
         return true
+    }
+
+    // ---- hold-to-snap shapes ----
+    private var holdX = 0f
+    private var holdY = 0f
+    private var liveSnapped = false
+    private val holdCheck = Runnable {
+        if (!shapeSnap || liveSnapped || liveErasing || (tool != Tool.PEN && tool != Tool.MARKER) || live.size < 18) return@Runnable
+        val shaped = ShapeSnap.snap(live.toFloatArray()) ?: return@Runnable
+        live.clear()
+        shaped.forEach { live.add(it) }
+        liveTimes.clear()
+        for (i in 0 until shaped.size / 3) liveTimes.add(i * 8L)
+        liveSnapped = true
+        performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+        invalidate()
+    }
+
+    private fun armHold(x: Float, y: Float) {
+        holdX = x; holdY = y
+        removeCallbacks(holdCheck)
+        if (shapeSnap && !liveSnapped) postDelayed(holdCheck, 550)
     }
 
     private fun addPoint(x: Float, y: Float, p: Float, t: Long) {
@@ -311,6 +412,7 @@ class InkView(context: Context) : View(context) {
             eraseAt(px, py)
             return
         }
+        if (liveSnapped) return
         val n = live.size
         if (n >= 3 && abs(live[n - 3] - px) < 0.4f && abs(live[n - 2] - py) < 0.4f) return
         live.add(px); live.add(py); live.add(if (p <= 0f) 0.5f else p)
@@ -347,17 +449,21 @@ class InkView(context: Context) : View(context) {
         } else if (live.size >= 3) {
             snapshot()
             val audio = liveAudio
+            val isMarker = tool == Tool.MARKER
             val s = Stroke(
                 pts = live.toFloatArray(),
                 times = liveTimes.toLongArray(),
                 t0 = System.currentTimeMillis(),
-                width = penWidth,
+                width = if (isMarker) MARKER_WIDTH else penWidth,
                 recId = audio?.first,
                 audioMs = audio?.second ?: -1,
+                color = if (isMarker) 0 else inkColor,
+                marker = isMarker,
             )
             strokes.add(s)
-            // draw onto the cache directly; no full rebuild needed
-            cache?.let { if (!cacheDirty) drawStroke(Canvas(it), s.pts, s.width, inkPaint) }
+            // ink can go straight onto the cache; a highlighter belongs underneath, so redraw
+            if (isMarker) invalidateCache()
+            else cache?.let { if (!cacheDirty) drawStroke(Canvas(it), s.pts, s.width, paintFor(s)) }
             onStrokesChanged?.invoke(strokes.toList())
         }
         live.clear(); liveTimes.clear()
@@ -435,6 +541,8 @@ class InkView(context: Context) : View(context) {
     }
 
     companion object {
+        const val MARKER_WIDTH = 22f
+
         fun boundsOf(list: List<Stroke>): RectF {
             var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
             for (s in list) {
