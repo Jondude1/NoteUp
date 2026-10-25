@@ -29,6 +29,20 @@ object Settings {
     var stylusOnly by mutableStateOf(true)
     var refreshFlash by mutableStateOf(true)
     var defaultTemplate by mutableStateOf(Template.LINED)
+    var shapeSnap by mutableStateOf(true)
+
+    /** AI gives pages a title and tags after they're read. */
+    var autoTag by mutableStateOf(true)
+
+    // sync (WebDAV: Nextcloud, ownCloud, any WebDAV server)
+    var syncUrl by mutableStateOf("")
+    var syncUser by mutableStateOf("")
+    var syncPass by mutableStateOf("")
+    var syncAudio by mutableStateOf(false)
+    var autoSync by mutableStateOf(true)
+
+    // daily brief
+    var briefCalendar by mutableStateOf(true)
 
     fun init(ctx: Context) {
         prefs = ctx.getSharedPreferences("noteup_settings", Context.MODE_PRIVATE)
@@ -46,6 +60,14 @@ object Settings {
         stylusOnly = prefs.getBoolean("stylusOnly", true)
         refreshFlash = prefs.getBoolean("refreshFlash", true)
         defaultTemplate = enumOr(prefs.getString("template", null), Template.LINED)
+        shapeSnap = prefs.getBoolean("shapeSnap", true)
+        autoTag = prefs.getBoolean("autoTag", true)
+        syncUrl = prefs.getString("syncUrl", "") ?: ""
+        syncUser = prefs.getString("syncUser", "") ?: ""
+        syncPass = prefs.getString("syncPass", "") ?: ""
+        syncAudio = prefs.getBoolean("syncAudio", false)
+        autoSync = prefs.getBoolean("autoSync", true)
+        briefCalendar = prefs.getBoolean("briefCalendar", true)
     }
 
     fun save() {
@@ -64,6 +86,14 @@ object Settings {
             .putBoolean("stylusOnly", stylusOnly)
             .putBoolean("refreshFlash", refreshFlash)
             .putString("template", defaultTemplate.name)
+            .putBoolean("shapeSnap", shapeSnap)
+            .putBoolean("autoTag", autoTag)
+            .putString("syncUrl", syncUrl.trim())
+            .putString("syncUser", syncUser.trim())
+            .putString("syncPass", syncPass)
+            .putBoolean("syncAudio", syncAudio)
+            .putBoolean("autoSync", autoSync)
+            .putBoolean("briefCalendar", briefCalendar)
             .apply()
     }
 

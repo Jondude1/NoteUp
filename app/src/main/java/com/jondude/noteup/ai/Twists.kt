@@ -82,4 +82,57 @@ A: ...
 NOTES:
 $text
 """.trimIndent()
+
+    /** Page title + tags, as JSON. */
+    fun titleTags(text: String) = """
+Give this handwritten page a short title (max 6 words) and 1-4 lowercase topic tags (one or two words each).
+Reply with JSON only: {"title": "...", "tags": ["...", "..."]}
+
+PAGE:
+${text.take(4000)}
+""".trimIndent()
+
+    /** Commands written next to a circled word/phrase. */
+    val COMMANDS = listOf("define", "translate", "explain", "expand", "summarize", "summarise", "solve", "rewrite", "simplify", "ask", "?")
+
+    fun command(cmd: String, extra: String, ocr: String) = when (cmd) {
+        "define" -> "Define the circled word or phrase in one or two plain sentences."
+        "translate" -> "Translate the circled text ${if (extra.isNotBlank()) "into $extra" else "into English (or into Spanish if it's already English)"}. Give only the translation, then a one-line pronunciation hint if useful."
+        "explain" -> "Explain the circled item simply, in at most 3 sentences."
+        "expand" -> "Expand on the circled idea with 3-4 short bullet points I could add to my notes."
+        "summarize", "summarise" -> "Summarize the circled notes in 2-3 sentences."
+        "solve" -> "Solve the circled problem. Show the key steps briefly, then the answer."
+        "rewrite" -> "Rewrite the circled text more clearly, keeping the meaning."
+        "simplify" -> "Simplify the circled expression or sentence. Give just the result and one line of how."
+        else -> extra.ifBlank { "Answer or respond to the circled item." }
+    } + (if (ocr.isNotBlank()) "\n\nOCR reading of the circled ink (may have errors): <<$ocr>>" else "") +
+        "\n\nAnswer in at most 80 words — it will be written in the margin."
+
+    /** Parses "translate to french" → ("translate", "french"); null when it's not a command. */
+    fun parseCommand(written: String): Pair<String, String>? {
+        val t = written.trim().lowercase().replace("\n", " ").trim('.', ':', '!', ' ')
+        if (t == "?" || t == "??") return "ask" to ""
+        val first = t.substringBefore(' ')
+        val rest = t.substringAfter(' ', "").removePrefix("to ").removePrefix("into ").trim()
+        val cmd = COMMANDS.firstOrNull { it == first } ?: return null
+        return cmd to rest
+    }
+
+    /** Sketched diagram → clean nodes and edges in image pixel coordinates. */
+    fun diagram(w: Int, h: Int) = """
+The image ($w x $h pixels) is a hand-sketched diagram. Describe it so it can be redrawn neatly.
+Reply with JSON only, using pixel coordinates of this image:
+{"nodes":[{"id":"a","shape":"rect|ellipse|diamond|none","x":0,"y":0,"w":0,"h":0,"label":"text inside"}],
+ "edges":[{"from":"a","to":"b","label":"","arrow":true}]}
+- x,y is the top-left of each shape; keep shapes where they are, but align ones that are almost in a row or column
+- use "none" for free-standing text labels
+- read handwritten labels carefully; keep them short
+""".trimIndent()
+
+    /** Extracts the first {...} JSON object from a model reply. */
+    fun jsonObject(reply: String): String? {
+        val a = reply.indexOf('{')
+        val b = reply.lastIndexOf('}')
+        return if (a >= 0 && b > a) reply.substring(a, b + 1) else null
+    }
 }

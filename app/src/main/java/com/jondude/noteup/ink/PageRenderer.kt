@@ -15,7 +15,12 @@ import kotlin.math.min
 
 /** Renders ink to a clean black-on-white PNG for the vision model. */
 object PageRenderer {
-    fun render(strokes: List<Stroke>, area: RectF? = null, maxSide: Int = 1400): Bitmap {
+    /** The image plus how to map image pixels back to page units: page = src.left + px / scale. */
+    class Rendered(val bitmap: Bitmap, val src: RectF, val scale: Float)
+
+    fun render(strokes: List<Stroke>, area: RectF? = null, maxSide: Int = 1400): Bitmap = renderMapped(strokes, area, maxSide).bitmap
+
+    fun renderMapped(strokes: List<Stroke>, area: RectF? = null, maxSide: Int = 1400): Rendered {
         val pad = 24f
         val src = area?.let { RectF(it.left - pad, it.top - pad, it.right + pad, it.bottom + pad) }
             ?: RectF(0f, 0f, PAGE_W, PAGE_H)
@@ -39,7 +44,7 @@ object PageRenderer {
                 )
             }
         }
-        return bmp
+        return Rendered(bmp, src, s)
     }
 
     fun toPngBase64(bmp: Bitmap): String {

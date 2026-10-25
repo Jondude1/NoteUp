@@ -31,6 +31,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Store.init(applicationContext)
         Settings.init(applicationContext)
+        com.jondude.noteup.data.Indexer.start()
         setContent {
             val recording = Recorder.active != null
             LaunchedEffect(recording) {
@@ -85,7 +86,7 @@ private fun App() {
             HomeScreen(
                 tab = tab,
                 onTab = { lastTab = it.name; route = "home:${it.name}" },
-                onOpenNotebook = { route = "nb:$it:0" },
+                onOpenNotebook = { id, idx -> route = "nb:$id:$idx" },
                 onOpenRecording = { route = "rec:$it" },
             )
         }

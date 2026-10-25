@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.RectF
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -57,6 +58,10 @@ import com.jondude.noteup.ai.Twists
 import com.jondude.noteup.audio.Player
 import com.jondude.noteup.audio.Recorder
 import com.jondude.noteup.data.Documents
+import com.jondude.noteup.data.Indexer
+import com.jondude.noteup.data.Stroke
+import com.jondude.noteup.ink.DiagramBuilder
+import com.jondude.noteup.ink.InkCommands
 import com.jondude.noteup.data.MarginNote
 import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.PAGE_H
@@ -86,8 +91,14 @@ private class PageEditor(val nbId: String, val scope: CoroutineScope) {
     private var dirty = false
 
     fun load(id: String) {
-        flush()
+        leave()
         page = Store.page(id, nbId)
+    }
+
+    /** Save, and queue the page to be read in the background (search, titles, tags). */
+    fun leave() {
+        flush()
+        page?.let { p -> if (p.convertedText == null && p.strokes.any { !it.marker }) Indexer.schedule(p.id, nbId) }
     }
 
     fun update(f: (Page) -> Page) {
@@ -103,6 +114,17 @@ private class PageEditor(val nbId: String, val scope: CoroutineScope) {
         if (dirty) page?.let { Store.savePage(it) }
         dirty = false
     }
+}
+
+/** A loop just drawn around ink, waiting to see if a command word is written beside it. */
+private class CircleCmd(val enclosed: Set<String>, val bounds: RectF, var lastAt: Long) {
+    val cmdIds = HashSet<String>()
+}
+
+private class CircleState {
+    var active: CircleCmd? = null
+    var knownIds: Set<String> = emptySet()
+    var job: Job? = null
 }
 
 private enum class PanelKind { NONE, TRANSCRIPT, CLAUDE }
@@ -144,12 +166,15 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     var dialog by remember { mutableStateOf<String?>(null) }
     var tappedNote by remember { mutableStateOf<MarginNote?>(null) }
     var renaming by remember { mutableStateOf(false) }
+    val circle = remember { CircleState() }
 
     LaunchedEffect(pageId) {
         ed.load(pageId)
         val p = ed.page!!
         ink.setContent(p.strokes, p.annotations)
         ink.texts = p.texts
+        circle.active = null
+        circle.knownIds = p.strokes.map { it.id }.toHashSet()
         selection = null
         ink.background = null
         ink.background = withContext(Dispatchers.IO) { Documents.loadBackground(p.background) }
@@ -158,10 +183,11 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     LaunchedEffect(nb.template) { ink.template = nb.template }
     LaunchedEffect(tool) { ink.tool = tool; if (tool != Tool.LASSO) selection = null }
     LaunchedEffect(penWidth) { ink.penWidth = penWidth }
+    LaunchedEffect(Settings.shapeSnap) { ink.shapeSnap = Settings.shapeSnap }
     LaunchedEffect(Settings.stylusOnly) { ink.stylusOnly = Settings.stylusOnly }
     DisposableEffect(Unit) {
         ink.recordingClock = { Recorder.clock() }
-        onDispose { ed.flush(); ink.recordingClock = null }
+        onDispose { ed.leave(); ink.recordingClock = null }
     }
 
     // Ink replay: while audio plays, strokes written later in the recording are drawn faded.
@@ -207,6 +233,55 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         (if (sel != null) p.strokes.filter { it.id in sel.first } else p.strokes).filter { !it.marker }
     } ?: emptyList()
 
+    fun placeInMargin(answer: String, area: RectF?, strokes: List<Stroke>) {
+        val b = area ?: InkView.boundsOf(strokes)
+        val note = if (b.right + 300f < PAGE_W) {
+            val x = b.right + 30f
+            MarginNote(x = x, y = max(60f, b.top + 14f), w = PAGE_W - x - 40f, text = answer)
+        } else {
+            val x = max(60f, b.left)
+            MarginNote(x = x, y = min(PAGE_H - 160f, b.bottom + 50f), w = min(640f, PAGE_W - x - 50f), text = answer)
+        }
+        ed.update { it.copy(annotations = it.annotations + note) }
+        ink.setAnnotations(ed.page!!.annotations)
+    }
+
+    /** define / translate / explain / ... on some ink; the answer goes in the margin. */
+    fun runCommand(cmd: String, extra: String, strokes: List<Stroke>, area: RectF?) {
+        if (strokes.isEmpty()) return
+        val title = cmd.replaceFirstChar { it.uppercase() }
+        runClaude(title, work = {
+            val img = withContext(Dispatchers.Default) { PageRenderer.toPngBase64(PageRenderer.render(strokes, area)) }
+            val ocr = try { HandwritingRecognizer.recognize(strokes, Settings.language) } catch (e: Exception) { "" }
+            AiClient.ask(Twists.SYSTEM, Twists.command(cmd, extra, ocr), img, 600)
+        }, then = { answer ->
+            placeInMargin(answer, area, strokes)
+            "(Written in the margin.)"
+        })
+    }
+
+    fun cleanDiagram() {
+        val strokes = targetStrokes()
+        if (strokes.isEmpty()) { panel = Panel(PanelKind.CLAUDE, "Clean diagram", error = "Lasso a sketch first."); return }
+        val area = selection?.second ?: InkView.boundsOf(strokes)
+        panel = Panel(PanelKind.CLAUDE, "Clean diagram")
+        runClaude("Clean diagram", work = {
+            val r = withContext(Dispatchers.Default) { PageRenderer.renderMapped(strokes, area, 1200) }
+            val reply = AiClient.ask(Twists.SYSTEM, Twists.diagram(r.bitmap.width, r.bitmap.height), PageRenderer.toPngBase64(r.bitmap), 2500)
+            val (newStrokes, labels) = withContext(Dispatchers.Default) { DiagramBuilder.build(reply, r.src, r.scale, penWidth) }
+            ink.replaceStrokes(strokes.map { it.id }.toSet(), newStrokes)
+            ed.update { it.copy(texts = it.texts + labels) }
+            ink.texts = ed.page!!.texts
+            selection = null
+            "Redrawn with ${newStrokes.size} clean lines and ${labels.size} labels. Undo brings your sketch back."
+        })
+    }
+
+    fun clearLabels() {
+        ed.update { it.copy(texts = emptyList()) }
+        ink.texts = emptyList()
+    }
+
     fun askClaude() {
         val strokes = targetStrokes()
         if (strokes.isEmpty()) { panel = Panel(PanelKind.CLAUDE, "Ask Claude", error = "Write something on the page first."); return }
@@ -218,16 +293,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             AiClient.ask(Twists.SYSTEM, Twists.askPage(q, ocr), img, 700)
         }, then = { answer ->
             // Claude writes back in the margin, next to what you asked about.
-            val b = area ?: InkView.boundsOf(strokes)
-            val note = if (b.right + 300f < PAGE_W) {
-                val x = b.right + 30f
-                MarginNote(x = x, y = max(60f, b.top + 14f), w = PAGE_W - x - 40f, text = answer)
-            } else {
-                val x = max(60f, b.left)
-                MarginNote(x = x, y = min(PAGE_H - 160f, b.bottom + 50f), w = min(640f, PAGE_W - x - 50f), text = answer)
-            }
-            ed.update { it.copy(annotations = it.annotations + note) }
-            ink.setAnnotations(ed.page!!.annotations)
+            placeInMargin(answer, area, strokes)
             question = ""
             "(Written in the margin — tap it to copy or remove.)"
         })
@@ -285,7 +351,39 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     }
 
     SideEffect {
-        ink.onStrokesChanged = { s -> ed.update { it.copy(strokes = s, convertedText = null) } }
+        ink.onStrokesChanged = { s ->
+            ed.update { it.copy(strokes = s, convertedText = null) }
+            val added = s.filter { it.id !in circle.knownIds }
+            circle.knownIds = s.map { it.id }.toHashSet()
+            if (added.size == 1) {
+                val st = added[0]
+                val c = circle.active
+                val now = SystemClock.uptimeMillis()
+                if (c != null && now - c.lastAt < 4000 && InkCommands.gap(InkView.boundsOf(listOf(st)), c.bounds) < 350f) {
+                    // writing next to a fresh circle: maybe a command like "define"
+                    c.cmdIds += st.id
+                    c.lastAt = now
+                    circle.job?.cancel()
+                    circle.job = scope.launch {
+                        delay(1400)
+                        val cmdStrokes = ink.currentStrokes().filter { it.id in c.cmdIds }
+                        val written = try { HandwritingRecognizer.recognize(cmdStrokes, Settings.language) } catch (e: Exception) { "" }
+                        val parsed = Twists.parseCommand(written)
+                        circle.active = null
+                        if (parsed != null) {
+                            val target = ink.currentStrokes().filter { it.id in c.enclosed }
+                            ink.deleteStrokes(c.cmdIds.toSet())
+                            panel = Panel(PanelKind.CLAUDE, "Claude")
+                            runCommand(parsed.first, parsed.second, target, c.bounds)
+                        }
+                    }
+                } else {
+                    val enclosed = InkCommands.enclosedBy(st, s)
+                    circle.active = if (enclosed.isEmpty()) null else
+                        CircleCmd(enclosed, InkView.boundsOf(s.filter { it.id in enclosed }), now)
+                }
+            }
+        }
         ink.onLasso = { ids, b -> selection = ids to b }
         ink.onSwipe = { dir -> turn(dir) }
         ink.onAnnotationTap = { tappedNote = it }
@@ -340,10 +438,18 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
 
         // ---------- selection bar ----------
         if (selection != null) {
-            Row(Modifier.fillMaxWidth().background(Ink.Black).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                T("${selection!!.first.size} strokes selected", color = Ink.White, sans = true, size = 14.sp, modifier = Modifier.padding(8.dp))
-                Spacer(Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth().background(Ink.Black).horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                T("${selection!!.first.size} selected", color = Ink.White, sans = true, size = 14.sp, modifier = Modifier.padding(8.dp))
+                Spacer(Modifier.width(12.dp))
                 SelAction("Ask Claude") { panel = Panel(PanelKind.CLAUDE, "Claude"); askClaude() }
+                listOf("define", "translate", "explain", "solve").forEach { cmd ->
+                    SelAction(cmd.replaceFirstChar { it.uppercase() }) {
+                        panel = Panel(PanelKind.CLAUDE, "Claude")
+                        runCommand(cmd, "", targetStrokes(), selection?.second)
+                    }
+                }
+                SelAction("Clean diagram") { cleanDiagram() }
                 SelAction("To text") { convert() }
                 SelAction("Delete") { ink.deleteStrokes(selection!!.first); selection = null }
                 SelAction("Done") { ink.clearSelection(); selection = null }
@@ -367,6 +473,9 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                             onAsk = { askClaude() },
                             onConvert = { convert() },
                             onMinutes = { minutes() },
+                            onDiagram = { cleanDiagram() },
+                            hasLabels = ed.page?.texts?.isNotEmpty() == true,
+                            onClearLabels = { clearLabels() },
                             onTidy = { tidy(panel.body) },
                             onFlashcards = { text ->
                                 runClaude("Flashcards", work = { AiClient.ask(Twists.SYSTEM, Twists.flashcards(text), null, 1200) })
@@ -555,6 +664,9 @@ private fun ClaudePanel(
     onAsk: () -> Unit,
     onConvert: () -> Unit,
     onMinutes: () -> Unit,
+    onDiagram: () -> Unit,
+    hasLabels: Boolean,
+    onClearLabels: () -> Unit,
     onTidy: () -> Unit,
     onFlashcards: (String) -> Unit,
     onCopy: () -> Unit,
@@ -572,7 +684,14 @@ private fun ClaudePanel(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             InkButton("To text", small = true, enabled = !panel.busy, onClick = onConvert)
             InkButton("Minutes", small = true, enabled = !panel.busy, onClick = onMinutes)
+            InkButton("Clean diagram", small = true, enabled = !panel.busy, onClick = onDiagram)
         }
+        if (hasLabels) {
+            Spacer(Modifier.height(8.dp))
+            InkButton("Remove typed labels", small = true, onClick = onClearLabels)
+        }
+        Spacer(Modifier.height(10.dp))
+        T("Tip: circle a word, then write define, translate, explain, solve or ? next to it.", size = 13.sp, color = Ink.Gray, italic = true)
         Spacer(Modifier.height(16.dp))
         HRule(thickness = 1.dp)
         Spacer(Modifier.height(12.dp))
@@ -617,7 +736,8 @@ private fun PagesDialog(nb: Notebook, current: Int, onPick: (Int) -> Unit, onDel
                         .border(if (i == current) 3.dp else Ink.Rule, Ink.Black).background(Ink.White)) {
                         thumb?.let { Image(it, null, Modifier.fillMaxSize()) }
                     }
-                    T("${i + 1}", size = 13.sp, sans = true, bold = i == current)
+                    val title = Store.page(pid, nb.id).title
+                    T("${i + 1}${title?.let { " · $it" } ?: ""}", size = 12.sp, sans = true, bold = i == current, maxLines = 2)
                 }
             }
         }

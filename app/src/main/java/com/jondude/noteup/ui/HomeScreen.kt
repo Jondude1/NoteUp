@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -42,6 +43,7 @@ import com.jondude.noteup.ai.AiClient
 import com.jondude.noteup.ai.Twists
 import com.jondude.noteup.audio.Recorder
 import com.jondude.noteup.data.Documents
+import com.jondude.noteup.data.Indexer
 import com.jondude.noteup.data.Notebook
 import com.jondude.noteup.data.Settings
 import com.jondude.noteup.data.Store
@@ -61,7 +63,7 @@ private val longDate = SimpleDateFormat("EEEE, MMMM d", Locale.US)
 fun HomeScreen(
     tab: Tab,
     onTab: (Tab) -> Unit,
-    onOpenNotebook: (String) -> Unit,
+    onOpenNotebook: (String, Int) -> Unit,
     onOpenRecording: (String) -> Unit,
 ) {
     Row(Modifier.fillMaxSize().background(Ink.White)) {
@@ -88,7 +90,7 @@ fun HomeScreen(
         VRule(Modifier.fillMaxHeight())
         Box(Modifier.weight(1f).fillMaxHeight()) {
             when (tab) {
-                Tab.NOTES -> Shelf(onOpenNotebook)
+                Tab.NOTES -> Shelf(onOpenNotebook, onOpenRecording)
                 Tab.RECORDINGS -> RecordingsList(onOpenRecording)
                 Tab.TASKS -> TasksTab()
                 Tab.ASK -> AskTab()
@@ -110,7 +112,10 @@ private fun Header(title: String, action: (@Composable () -> Unit)? = null) {
 // ---------------- Notes shelf ----------------
 
 @Composable
-private fun Shelf(onOpen: (String) -> Unit) {
+private fun Shelf(onOpenPage: (String, Int) -> Unit, onOpenRecording: (String) -> Unit) {
+    val onOpen: (String) -> Unit = { onOpenPage(it, 0) }
+    var query by remember { mutableStateOf("") }
+    var tag by remember { mutableStateOf<String?>(null) }
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var creating by remember { mutableStateOf(false) }
@@ -137,6 +142,47 @@ private fun Shelf(onOpen: (String) -> Unit) {
                 InkButton("+ New notebook") { creating = true }
             }
         }
+        // search your handwriting
+        Row(Modifier.fillMaxWidth().padding(start = 28.dp, end = 20.dp, top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            InkField(query, { query = it }, Modifier.weight(1f), hint = "Search your handwriting, notes and recordings")
+            if (query.isNotEmpty() || tag != null) {
+                Spacer(Modifier.width(10.dp))
+                InkButton("Clear", small = true) { query = ""; tag = null }
+            }
+        }
+        val version = Store.pagesVersion
+        val tags = remember(version) { Indexer.allTags() }
+        if (tags.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 28.dp, end = 20.dp, top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                tags.forEach { t -> InkButton("#$t", small = true, on = tag == t) { tag = if (tag == t) null else t } }
+            }
+        }
+        if (Indexer.pending > 0) {
+            T("Reading ${Indexer.pending} page${if (Indexer.pending == 1) "" else "s"} of handwriting…", size = 12.sp, sans = true,
+                color = Ink.Gray, modifier = Modifier.padding(start = 28.dp, top = 6.dp))
+        }
+        if (query.isNotBlank() || tag != null) {
+            val hits = remember(query, tag, version) { Indexer.search(query, tag) }
+            LazyColumn(Modifier.fillMaxSize().padding(top = 8.dp)) {
+                if (hits.isEmpty()) item {
+                    T("Nothing found. Pages are read in the background a moment after you leave them.", italic = true,
+                        color = Ink.Gray, modifier = Modifier.padding(28.dp))
+                }
+                items(hits) { h ->
+                    Column(Modifier.fillMaxWidth().inkClick {
+                        if (h.recording != null) onOpenRecording(h.recording.id) else onOpenPage(h.nb.id, h.index)
+                    }.padding(horizontal = 28.dp, vertical = 12.dp)) {
+                        val where = if (h.recording != null) "Recording · ${h.recording.title}"
+                            else "${h.nb.title} · page ${h.index + 1}${h.page?.title?.let { " — $it" } ?: ""}"
+                        T(where, size = 13.sp, sans = true, bold = true, maxLines = 1)
+                        T(h.snippet, size = 16.sp, maxLines = 3)
+                        h.page?.tags?.takeIf { it.isNotEmpty() }?.let { T(it.joinToString("  ") { t -> "#$t" }, size = 12.sp, color = Ink.Gray, sans = true) }
+                    }
+                    HRule(thickness = 1.dp)
+                }
+            }
+        } else {
         LazyVerticalGrid(
             GridCells.Adaptive(170.dp),
             Modifier.fillMaxSize().padding(horizontal = 20.dp),
@@ -167,6 +213,7 @@ private fun Shelf(onOpen: (String) -> Unit) {
                 T("Long-press a notebook to rename or delete it.", size = 13.sp, color = Ink.Gray, italic = true,
                     modifier = Modifier.padding(vertical = 24.dp))
             }
+        }
         }
     }
 
@@ -461,6 +508,10 @@ private fun SettingsTab() {
                 note = "Palm rejection: fingers swipe pages and tap, only the S Pen writes. Hold the pen button to erase.")
             Toggle("E-ink refresh flash", Settings.refreshFlash, { v -> s { Settings.refreshFlash = v } },
                 note = "A quick black blink when you turn pages, like a real e-ink screen")
+            Toggle("Snap shapes", Settings.shapeSnap, { v -> s { Settings.shapeSnap = v } },
+                note = "Hold the pen still at the end of a stroke to turn it into a clean line, box, circle or triangle")
+            Toggle("Auto titles and tags", Settings.autoTag, { v -> s { Settings.autoTag = v } },
+                note = "After a page is read, the AI names it and tags its topics (uses your AI setting)")
             SectionLabel("Default paper")
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Template.entries.forEach { t ->
