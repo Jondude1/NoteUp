@@ -22,7 +22,18 @@ Every push to `main` rebuilds the APK automatically (Actions tab).
 - Tasks list
 - E-ink feel: black and white, square edges, serif type, no animations, optional refresh blink on page turn
 
+**Notes**
+- Import PDFs and write on them; share pages or notebooks as PDF, image or Markdown
+- Highlighter, three ink shades, and hold-to-snap shapes (line, box, circle, triangle)
+- Search your handwriting; pages are read in the background and get AI titles and tags
+- Sync between tablets through any WebDAV server (Nextcloud works)
+- Today tab: calendar, due tasks and an AI daily brief
+
 **Claude twists**
+- **Circle and write** — circle a word, write define / translate / explain / solve / ? beside it
+- **Clean diagram** — lasso a sketch and it's redrawn with clean shapes and typed labels
+- **Speakers** — transcripts split into speaker turns, using names when people introduce themselves
+- **Due dates** — minutes pick up deadlines; tasks go to your calendar
 - **Writes back in the margin** — lasso a question, equation or idea and Claude answers next to it on the page
 - **Minutes** — recording + your handwritten notes → summary, decisions, action items; action items go straight to Tasks
 - **Ask your notes** — one question across every notebook, transcript and set of minutes, with where each answer came from
