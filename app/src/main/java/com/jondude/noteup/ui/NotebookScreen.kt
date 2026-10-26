@@ -358,6 +358,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
 
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) startRecording()
+        else android.widget.Toast.makeText(ctx, "NoteUp needs the microphone. Allow it in Settings > Apps > NoteUp > Permissions.", android.widget.Toast.LENGTH_LONG).show()
     }
 
     /** Drawn check boxes become tasks: the handwriting beside a box is read and added to Tasks. */
@@ -508,6 +509,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             ToolItem("Sync ▶", on = tool == Tool.PLAY) { tool = if (tool == Tool.PLAY) Tool.PEN else Tool.PLAY }
             val rec = Recorder.active
             ToolItem(if (rec != null) "■ ${fmtTime(Recorder.elapsedMs)}" else "● Rec", on = rec != null) {
+                android.widget.Toast.makeText(ctx, if (rec != null) "Stopping…" else "Starting recording…", android.widget.Toast.LENGTH_SHORT).show()
                 if (rec != null) Recorder.stop()
                 else if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startRecording()
                 else micPermission.launch(Manifest.permission.RECORD_AUDIO)

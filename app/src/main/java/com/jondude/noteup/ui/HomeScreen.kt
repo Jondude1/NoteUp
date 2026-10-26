@@ -354,7 +354,7 @@ private fun RecordingsList(onOpen: (String) -> Unit) {
     fun begin() {
         if (Recorder.start(ctx, "Recording ${dateFmt.format(Date())}", null, null)) Recorder.active?.let { onOpen(it.id) }
     }
-    val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) begin() }
+    val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) begin() else android.widget.Toast.makeText(ctx, "NoteUp needs the microphone. Allow it in Settings > Apps > NoteUp > Permissions.", android.widget.Toast.LENGTH_LONG).show() }
     Column(Modifier.fillMaxSize()) {
         Header("Recordings") {
             val rec = Recorder.active
