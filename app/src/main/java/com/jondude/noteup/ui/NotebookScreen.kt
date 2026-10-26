@@ -85,6 +85,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /** Holds the open page and saves it a moment after the last change. */
 private class PageEditor(val nbId: String, val scope: CoroutineScope) {
@@ -169,6 +170,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     var dialog by remember { mutableStateOf<String?>(null) }
     var tappedNote by remember { mutableStateOf<MarginNote?>(null) }
     var renaming by remember { mutableStateOf(false) }
+    var zoomPct by remember { mutableIntStateOf(100) }
     val circle = remember { CircleState() }
 
     LaunchedEffect(pageId) {
@@ -461,6 +463,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             }
         }
         ink.onLasso = { ids, b -> selection = ids to b }
+        ink.onZoomChanged = { z -> zoomPct = (z * 100f).roundToInt() }
         ink.onBoxToggle = { st ->
             val tid = st.taskId
             if (tid != null) Store.tasks.firstOrNull { it.id == tid }?.let { Store.updateTask(it.copy(done = st.checked)) }
@@ -496,6 +499,9 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             ToolItem("Marker", on = tool == Tool.MARKER) { tool = Tool.MARKER }
             ToolItem("Eraser", on = tool == Tool.ERASER) { tool = Tool.ERASER }
             ToolItem("Lasso", on = tool == Tool.LASSO) { tool = Tool.LASSO }
+            ToolItem("−") { ink.zoomStep(-1) }
+            ToolItem(if (zoomPct <= 101) "100%" else "$zoomPct% · fit", on = zoomPct > 101) { ink.resetZoom() }
+            ToolItem("+") { ink.zoomStep(1) }
             ToolItem("Undo") { ink.undo() }
             ToolItem("Redo") { ink.redo() }
             ToolItem("Paper") { dialog = "template" }

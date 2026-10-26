@@ -16,6 +16,7 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import com.jondude.noteup.data.MarginNote
 import com.jondude.noteup.data.PAGE_H
@@ -85,6 +86,7 @@ class InkView(context: Context) : View(context) {
         annotations = a
         undoStack.clear(); redoStack.clear()
         clearSelection()
+        showPageTop()
         invalidateCache()
     }
 
@@ -138,15 +140,108 @@ class InkView(context: Context) : View(context) {
     fun clearSelection() { selection = null; selectionIds = emptySet(); invalidate() }
 
     // ---- geometry ----
+    // Current transform (page units -> screen pixels). fit* is the "whole page visible" view.
     private var scale = 1f
     private var offX = 0f
     private var offY = 0f
+    private var fitScale = 1f
+    private var fitOffX = 0f
+    private var fitOffY = 0f
+
+    /** Called with the zoom factor (1 = whole page fits) whenever it changes. */
+    var onZoomChanged: ((Float) -> Unit)? = null
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        scale = min(w / PAGE_W, h / PAGE_H)
-        offX = (w - PAGE_W * scale) / 2f
-        offY = (h - PAGE_H * scale) / 2f
+        fitScale = min(w / PAGE_W, h / PAGE_H)
+        fitOffX = (w - PAGE_W * fitScale) / 2f
+        fitOffY = (h - PAGE_H * fitScale) / 2f
+        scale = fitScale; offX = fitOffX; offY = fitOffY
         cache?.recycle(); cache = null
+        invalidateCache()
+        onZoomChanged?.invoke(1f)
+    }
+
+    fun zoomFactor() = if (fitScale > 0f) scale / fitScale else 1f
+    private fun isZoomed() = scale > fitScale * 1.02f
+
+    /** Keeps the page from being dragged away: centred when smaller than the view, edge-to-edge when larger. */
+    private fun clampPan() {
+        val pw = PAGE_W * scale
+        val ph = PAGE_H * scale
+        offX = if (pw <= width) (width - pw) / 2f else offX.coerceIn(width - pw, 0f)
+        offY = if (ph <= height) (height - ph) / 2f else offY.coerceIn(height - ph, 0f)
+    }
+
+    /** Zoom to [newScale] keeping the page point under (fx, fy) where it is. */
+    private fun zoomAround(newScale: Float, fx: Float, fy: Float) {
+        if (fitScale <= 0f) return
+        val s = newScale.coerceIn(fitScale, fitScale * MAX_ZOOM)
+        val k = s / scale
+        offX = fx - (fx - offX) * k
+        offY = fy - (fy - offY) * k
+        scale = s
+        clampPan()
+        onZoomChanged?.invoke(zoomFactor())
+    }
+
+    /** Buttons: one step in or out around the middle of the view. */
+    fun zoomStep(direction: Int) {
+        zoomAround(scale * if (direction > 0) 1.35f else 1f / 1.35f, width / 2f, height / 2f)
+        if (zoomFactor() < 1.02f) resetZoom() else invalidateCache()
+    }
+
+    fun resetZoom() {
+        scale = fitScale; offX = fitOffX; offY = fitOffY
+        onZoomChanged?.invoke(1f)
+        invalidateCache()
+    }
+
+    /** New page: keep the zoom level, but start at the top of the page. */
+    private fun showPageTop() {
+        if (width == 0 || !isZoomed()) return
+        offY = 0f
+        clampPan()
+    }
+
+    // two-finger pinch zooms and drags; one finger drags too once zoomed in
+    private var pinching = false
+    private var previewing = false
+    private var lastFx = 0f
+    private var lastFy = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private var dragging = false
+
+    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
+            // a second finger landed: whatever the first finger was drawing is not a stroke
+            removeCallbacks(holdCheck)
+            if (liveErasing && erasedThisGesture) changed()
+            liveErasing = false
+            live.clear(); liveTimes.clear()
+            pinching = true; previewing = true
+            lastFx = d.focusX; lastFy = d.focusY
+            return true
+        }
+
+        override fun onScale(d: ScaleGestureDetector): Boolean {
+            offX += d.focusX - lastFx
+            offY += d.focusY - lastFy
+            lastFx = d.focusX; lastFy = d.focusY
+            zoomAround(scale * d.scaleFactor, d.focusX, d.focusY)
+            invalidate()
+            return true
+        }
+
+        override fun onScaleEnd(d: ScaleGestureDetector) { endPreview() }
+    }).apply {
+        isQuickScaleEnabled = false
+        isStylusScaleEnabled = false
+    }
+
+    /** The gesture is over: redraw the page sharply at the new zoom. */
+    private fun endPreview() {
+        previewing = false
         invalidateCache()
     }
 
@@ -194,6 +289,9 @@ class InkView(context: Context) : View(context) {
 
     // ---- committed-ink cache ----
     private var cache: Bitmap? = null
+    private var cacheScale = 1f
+    private var cacheOffX = 0f
+    private var cacheOffY = 0f
     private var cacheDirty = true
     private val annotationRects = HashMap<String, RectF>()
 
@@ -226,6 +324,7 @@ class InkView(context: Context) : View(context) {
         for (s in strokes) if (s.box && s.checked) drawTick(c, s)
         drawTexts(c)
         drawAnnotations(c)
+        cacheScale = scale; cacheOffX = offX; cacheOffY = offY
         cacheDirty = false
     }
 
@@ -334,8 +433,18 @@ class InkView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        if (cacheDirty || cache == null) rebuildCache()
-        cache?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+        if ((cacheDirty || cache == null) && !previewing) rebuildCache()
+        cache?.let {
+            if (scale != cacheScale || offX != cacheOffX || offY != cacheOffY) {
+                // mid-gesture: stretch the last sharp picture instead of redrawing every stroke
+                val k = scale / cacheScale
+                canvas.save()
+                canvas.translate(offX - cacheOffX * k, offY - cacheOffY * k)
+                canvas.scale(k, k)
+                canvas.drawBitmap(it, 0f, 0f, null)
+                canvas.restore()
+            } else canvas.drawBitmap(it, 0f, 0f, null)
+        }
         // live stroke
         if (live.size >= 3) {
             if (tool == Tool.LASSO && !liveErasing) {
@@ -369,6 +478,15 @@ class InkView(context: Context) : View(context) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        // fingers feed the pinch detector; the pen never does
+        if (e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER) scaleDetector.onTouchEvent(e)
+        if (pinching) {
+            if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) {
+                pinching = false
+                if (previewing) endPreview()
+            }
+            return true
+        }
         val toolType = e.getToolType(0)
         val isPen = toolType == MotionEvent.TOOL_TYPE_STYLUS || toolType == MotionEvent.TOOL_TYPE_ERASER
         val writes = (isPen || !stylusOnly) && tool != Tool.PLAY
@@ -600,11 +718,23 @@ class InkView(context: Context) : View(context) {
 
     private fun handleTap(e: MotionEvent): Boolean {
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { downX = e.x; downY = e.y }
+            MotionEvent.ACTION_DOWN -> { downX = e.x; downY = e.y; lastX = e.x; lastY = e.y; dragging = false }
+            MotionEvent.ACTION_CANCEL -> { if (dragging) { dragging = false; endPreview() } }
+            MotionEvent.ACTION_MOVE -> {
+                if (isZoomed() && e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER &&
+                    (dragging || hypot(e.x - downX, e.y - downY) > 14f)) {
+                    dragging = true; previewing = true
+                    offX += e.x - lastX; offY += e.y - lastY
+                    clampPan()
+                    invalidate()
+                }
+                lastX = e.x; lastY = e.y
+            }
             MotionEvent.ACTION_UP -> {
+                if (dragging) { dragging = false; endPreview(); return true }
                 val dx = e.x - downX
                 val dy = e.y - downY
-                if (abs(dx) > 160f && abs(dx) > abs(dy) * 2f) {
+                if (!isZoomed() && abs(dx) > 160f && abs(dx) > abs(dy) * 2f) {
                     onSwipe?.invoke(if (dx < 0) 1 else -1)
                     return true
                 }
@@ -648,6 +778,7 @@ class InkView(context: Context) : View(context) {
 
     companion object {
         const val MARKER_WIDTH = 22f
+        const val MAX_ZOOM = 5f
 
         fun boundsOf(list: List<Stroke>): RectF {
             var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE

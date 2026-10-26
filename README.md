@@ -29,6 +29,10 @@ Every push to `main` rebuilds the APK automatically (Actions tab).
 - Sync between tablets through any WebDAV server (Nextcloud works)
 - Today tab: calendar, due tasks and an AI daily brief
 
+**Zoom**
+- Pinch with two fingers to zoom the page (up to 5×) and drag with two fingers to move around. Once zoomed in, one finger drags too, and swiping no longer turns the page
+- The toolbar has − / + and a fit button (shows the zoom level) for when you only have the pen in hand. Zoom stays when you change pages
+
 **Pen tricks**
 - **Check boxes** — draw a small square and it becomes a clean box. Tap it to tick it. The writing beside it is added to Tasks, and ticking either one ticks the other
 - **Scribble to erase** — scratch back and forth over ink to wipe it out (only when there is ink underneath)
