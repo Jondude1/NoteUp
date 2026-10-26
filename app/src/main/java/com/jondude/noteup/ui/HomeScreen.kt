@@ -92,7 +92,9 @@ fun HomeScreen(
             }
         }
         VRule(Modifier.fillMaxHeight())
-        Box(Modifier.weight(1f).fillMaxHeight()) {
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+        UpdateBanner()
+        Box(Modifier.weight(1f).fillMaxWidth()) {
             when (tab) {
                 Tab.TODAY -> TodayTab(onOpenNotebook)
                 Tab.NOTES -> Shelf(onOpenNotebook, onOpenRecording)
@@ -102,7 +104,58 @@ fun HomeScreen(
                 Tab.SETTINGS -> SettingsTab()
             }
         }
+        }
     }
+}
+
+/** "Update available" strip across the top; also does the quiet check whenever the app is opened. */
+@Composable
+private fun UpdateBanner() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var later by remember { mutableStateOf(false) }
+    val owner = ctx as? androidx.lifecycle.LifecycleOwner
+    androidx.compose.runtime.DisposableEffect(owner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) scope.launch { com.jondude.noteup.update.Updater.check(ctx) }
+        }
+        owner?.lifecycle?.addObserver(obs)
+        onDispose { owner?.lifecycle?.removeObserver(obs) }
+    }
+    val rel = com.jondude.noteup.update.Updater.available
+    if (rel != null && !later) {
+        Row(Modifier.fillMaxWidth().background(Ink.Black).padding(horizontal = 20.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            val u = com.jondude.noteup.update.Updater
+            T(if (u.busy) "Downloading update… ${u.progress.coerceAtLeast(0)}%" else "Update available — build ${rel.build}",
+                color = Ink.White, sans = true, modifier = Modifier.weight(1f))
+            if (!u.busy) {
+                Box(Modifier.background(Ink.White).inkClick { scope.launch { u.install(ctx) } }.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    T("Update", sans = true, bold = true)
+                }
+                Spacer(Modifier.width(10.dp))
+                Box(Modifier.inkClick { later = true }.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    T("Later", color = Ink.White, sans = true)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateSettings() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val u = com.jondude.noteup.update.Updater
+    SectionLabel("Updates")
+    T("Installed: build ${u.installedBuild(ctx)}", size = 15.sp, sans = true)
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        InkButton("Check for updates") { scope.launch { u.check(ctx, force = true) } }
+        if (u.available != null && !u.busy) InkButton("Install build ${u.available?.build}", on = true) { scope.launch { u.install(ctx) } }
+    }
+    u.message?.let { T(it, size = 14.sp, italic = true, color = Ink.Gray, modifier = Modifier.padding(top = 6.dp)) }
+    Spacer(Modifier.height(20.dp))
 }
 
 @Composable
@@ -565,6 +618,7 @@ private fun SettingsTab() {
     Column(Modifier.fillMaxSize()) {
         Header("Settings")
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp)) {
+            UpdateSettings()
             SectionLabel("AI")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 InkButton("Claude", on = Settings.backend == com.jondude.noteup.data.AiBackend.CLAUDE) {
