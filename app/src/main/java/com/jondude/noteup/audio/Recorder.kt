@@ -70,13 +70,19 @@ object Recorder {
         val rec = Recording(title = title, fileName = "${System.currentTimeMillis()}.wav", notebookId = notebookId, pageId = pageId)
         val file = File(Store.audioDir, rec.fileName)
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val ar = try {
-            AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, 8192) * 2)
-        } catch (e: Exception) {
-            status = "Microphone unavailable: ${e.message}"; return false
+        var found: AudioRecord? = null
+        var why = ""
+        for (src in intArrayOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.DEFAULT)) {
+            try {
+                val a = AudioRecord(src, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, 8192) * 2)
+                if (a.state == AudioRecord.STATE_INITIALIZED) { found = a; break }
+                a.release()
+                why = "microphone didn't start"
+            } catch (e: Throwable) { why = e.message ?: e.javaClass.simpleName }
         }
-        if (ar.state != AudioRecord.STATE_INITIALIZED) { status = "Microphone unavailable"; ar.release(); return false }
+        val ar: AudioRecord = found ?: run {
+            fail("Can't record: $why. Is another app using the microphone?", ctx); return false
+        }
 
         segments.clear(); partial = ""; elapsedMs = 0; bytesWritten = 0; status = null
         active = rec
@@ -96,7 +102,7 @@ object Recorder {
             var chunkStartMs = 0L
             FileOutputStream(file).use { out ->
                 out.write(Wav.header(0))
-                ar.startRecording()
+                try { ar.startRecording() } catch (e: Throwable) { running = false; main.post { fail("Can't record: ${e.message}", appCtx) } }
                 while (running) {
                     val n = ar.read(buf, 0, buf.size)
                     if (n <= 0) continue
@@ -122,6 +128,11 @@ object Recorder {
             Wav.finalize(file)
         }.apply { name = "noteup-recorder"; start() }
         return true
+    }
+
+    private fun fail(msg: String, ctx: Context?) {
+        status = msg
+        ctx?.let { try { android.widget.Toast.makeText(it.applicationContext, msg, android.widget.Toast.LENGTH_LONG).show() } catch (_: Exception) {} }
     }
 
     fun stop(): Recording? {
