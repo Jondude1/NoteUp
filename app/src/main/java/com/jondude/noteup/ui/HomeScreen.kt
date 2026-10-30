@@ -689,6 +689,8 @@ private fun SettingsTab() {
                 note = "Draw a small square and it becomes a box you can tap to tick. The writing beside it becomes a task in Tasks")
             Toggle("Scribble to erase", Settings.scribbleErase, { v -> s { Settings.scribbleErase = v } },
                 note = "Scratch back and forth over ink with the pen to wipe it out")
+            Toggle("Auto meeting notes", Settings.autoMinutes, { v -> s { Settings.autoMinutes = v } },
+                note = "When a recording stops, the AI writes the meeting minutes and adds action items to Tasks (uses your AI setting)")
             Toggle("Auto titles and tags", Settings.autoTag, { v -> s { Settings.autoTag = v } },
                 note = "After a page is read, the AI names it and tags its topics (uses your AI setting)")
             SectionLabel("Default paper")

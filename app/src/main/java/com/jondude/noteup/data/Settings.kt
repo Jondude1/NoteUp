@@ -38,6 +38,9 @@ object Settings {
     /** AI gives pages a title and tags after they're read. */
     var autoTag by mutableStateOf(true)
 
+    /** When a recording stops, the AI writes the meeting minutes and adds action items to Tasks. */
+    var autoMinutes by mutableStateOf(true)
+
     // sync (WebDAV: Nextcloud, ownCloud, any WebDAV server)
     var syncUrl by mutableStateOf("")
     var syncUser by mutableStateOf("")
@@ -68,6 +71,7 @@ object Settings {
         checkboxInk = prefs.getBoolean("checkboxInk", true)
         scribbleErase = prefs.getBoolean("scribbleErase", true)
         autoTag = prefs.getBoolean("autoTag", true)
+        autoMinutes = prefs.getBoolean("autoMinutes", true)
         syncUrl = prefs.getString("syncUrl", "") ?: ""
         syncUser = prefs.getString("syncUser", "") ?: ""
         syncPass = prefs.getString("syncPass", "") ?: ""
@@ -96,6 +100,7 @@ object Settings {
             .putBoolean("checkboxInk", checkboxInk)
             .putBoolean("scribbleErase", scribbleErase)
             .putBoolean("autoTag", autoTag)
+            .putBoolean("autoMinutes", autoMinutes)
             .putString("syncUrl", syncUrl.trim())
             .putString("syncUser", syncUser.trim())
             .putString("syncPass", syncPass)

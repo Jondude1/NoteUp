@@ -148,6 +148,7 @@ object Recorder {
         Store.upsertRecording(done)
         active = null
         partial = ""
+        appCtx?.let { AutoMinutes.schedule(it, rec.id, Settings.sttEngine == SttEngine.WHISPER) }
         try { appCtx?.let { it.stopService(Intent(it, RecordingService::class.java)) } } catch (_: Exception) {}
         return done
     }
