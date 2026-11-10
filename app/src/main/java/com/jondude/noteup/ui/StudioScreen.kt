@@ -46,6 +46,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.text.SimpleDateFormat
@@ -147,8 +149,11 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
                 if (chunks.isEmpty()) throw IllegalStateException("There's nothing in this notebook to summarise yet.")
                 val g = parseGuide(AiClient.ask(Twists.SYSTEM, Twists.guide("notebook", Corpus.prompt(chunks)), null, 700))
                     ?: throw IllegalStateException("The AI didn't return an overview. Try again.")
-                val body = Store.json.encodeToString(kotlinx.serialization.builtins.ListSerializer(kotlinx.serialization.builtins.serializer<String>()),
-                    listOf(g.first) + listOf("§") + g.second + listOf("§") + g.third)
+                val body = kotlinx.serialization.json.buildJsonObject {
+                    put("summary", g.first)
+                    putJsonArray("topics") { g.second.forEach { add(it) } }
+                    putJsonArray("questions") { g.third.forEach { add(it) } }
+                }.toString()
                 Store.studioOf(nbId).filter { it.kind == "guide" }.forEach { Store.deleteStudio(it.id) }
                 Store.upsertStudio(StudioItem(notebookId = nbId, kind = "guide", title = "Notebook overview", body = body))
             } catch (e: Exception) { error = e.message ?: "Something went wrong." }
@@ -335,13 +340,10 @@ private fun SourcesTab(
         }
         overview?.let { o ->
             Spacer(Modifier.height(16.dp))
-            val parts = try { Store.json.decodeFromString<List<String>>(o.body) } catch (e: Exception) { emptyList() }
-            val cut = parts.indexOf("§")
-            val summary = parts.firstOrNull().orEmpty()
-            val rest = if (cut >= 0) parts.drop(cut + 1) else emptyList()
-            val cut2 = rest.indexOf("§")
-            val topics = if (cut2 >= 0) rest.take(cut2) else rest
-            val qs = if (cut2 >= 0) rest.drop(cut2 + 1) else emptyList()
+            val obj = try { Store.json.parseToJsonElement(o.body).jsonObject } catch (e: Exception) { null }
+            val summary = obj?.get("summary")?.jsonPrimitive?.content.orEmpty()
+            val topics = obj?.get("topics")?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+            val qs = obj?.get("questions")?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
             SectionLabel("Notebook overview")
             T(summary, size = 16.sp)
             if (topics.isNotEmpty()) T(topics.joinToString(" · "), size = 13.sp, sans = true, color = Ink.Gray, modifier = Modifier.padding(top = 4.dp))
