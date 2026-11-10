@@ -85,6 +85,12 @@ fun HomeScreen(
                 }
             }
             Spacer(Modifier.weight(1f))
+            var touring by remember { mutableStateOf(false) }
+            val fresh = com.jondude.noteup.data.Tour.unseen(Settings.tourSeen)
+            Box(Modifier.fillMaxWidth().inkClick { touring = true }.padding(horizontal = 18.dp, vertical = 14.dp)) {
+                T(if (Settings.tourSeen == 0 || fresh == 0) "? Tour" else "? Tour · $fresh new", size = 15.sp, sans = true, bold = fresh > 0 && Settings.tourSeen > 0)
+            }
+            if (touring) TourDialog { touring = false }
             Recorder.active?.let {
                 Box(Modifier.fillMaxWidth().background(Ink.Black).inkClick { onTab(Tab.RECORDINGS) }.padding(14.dp)) {
                     T("● ${fmtTime(Recorder.elapsedMs)}", color = Ink.White, sans = true, bold = true)
@@ -714,6 +720,35 @@ private fun SettingsTab() {
                 }
             }
             Spacer(Modifier.height(40.dp))
+        }
+    }
+}
+
+
+/** Optional walkthrough. Opens on the new steps when there are any, otherwise from the start. */
+@Composable
+private fun TourDialog(onClose: () -> Unit) {
+    val seen = Settings.tourSeen
+    val hasNew = seen > 0 && com.jondude.noteup.data.Tour.unseen(seen) > 0
+    var newOnly by remember { mutableStateOf(hasNew) }
+    var i by remember { mutableStateOf(0) }
+    val list = com.jondude.noteup.data.Tour.visible(newOnly, seen)
+    val step = list[i.coerceIn(0, list.size - 1)]
+    fun close() { Settings.markTourSeen(com.jondude.noteup.data.Tour.latest); onClose() }
+    InkDialog(if (newOnly) "What's new" else "Tour", onDismiss = { close() }) {
+        T("${i + 1} of ${list.size}", size = 12.sp, sans = true, color = Ink.Gray)
+        Spacer(Modifier.height(6.dp))
+        T(step.title, bold = true, size = 20.sp)
+        Spacer(Modifier.height(8.dp))
+        T(step.body, size = 16.sp)
+        Spacer(Modifier.height(8.dp))
+        T("Find it: ${step.where}", size = 13.sp, sans = true, color = Ink.Gray)
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            InkButton("‹ Back", small = true, enabled = i > 0) { i-- }
+            if (i < list.size - 1) InkButton("Next ›", small = true, on = true) { i++ } else InkButton("Done", small = true, on = true) { close() }
+            if (hasNew) InkButton(if (newOnly) "Show all" else "Only new", small = true) { newOnly = !newOnly; i = 0 }
+            InkButton("Close", small = true) { close() }
         }
     }
 }

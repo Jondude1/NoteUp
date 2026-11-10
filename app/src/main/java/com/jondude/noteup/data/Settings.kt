@@ -51,6 +51,10 @@ object Settings {
     var syncAudio by mutableStateOf(false)
     var autoSync by mutableStateOf(true)
 
+    // walkthrough: highest step the person has already seen
+    var tourSeen by mutableStateOf(0)
+    fun markTourSeen(v: Int) { tourSeen = v; prefs.edit().putInt("tourSeen", v).apply() }
+
     // daily brief
     var briefCalendar by mutableStateOf(true)
 
@@ -58,6 +62,7 @@ object Settings {
         prefs = ctx.getSharedPreferences("noteup_settings", Context.MODE_PRIVATE)
         backend = enumOr(prefs.getString("backend", null), AiBackend.CLAUDE)
         fallbackToOther = prefs.getBoolean("fallback", true)
+        tourSeen = prefs.getInt("tourSeen", 0)
         claudeKey = prefs.getString("claudeKey", "") ?: ""
         claudeModel = prefs.getString("claudeModel", claudeModel) ?: claudeModel
         localUrl = prefs.getString("localUrl", localUrl) ?: localUrl
