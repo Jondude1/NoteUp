@@ -54,6 +54,10 @@ object Recorder {
     var status by mutableStateOf<String?>(null)
         private set
     val segments = mutableStateListOf<Segment>()
+    /** ★ marks (ms into the audio) made during this recording. */
+    val marks = mutableStateListOf<Long>()
+
+    fun mark() { if (active != null && running) marks.add(bytesWritten / BYTES_PER_MS) }
 
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -86,7 +90,7 @@ object Recorder {
             fail("Can't record: $why. Is another app using the microphone?", ctx); return false
         }
 
-        segments.clear(); partial = ""; elapsedMs = 0; bytesWritten = 0; status = null
+        marks.clear(); segments.clear(); partial = ""; elapsedMs = 0; bytesWritten = 0; status = null
         active = rec
         lateTarget = null
         Store.upsertRecording(rec)
@@ -147,7 +151,7 @@ object Recorder {
         lateTarget = rec.id
         main.post { OnDeviceStt.stop() }
         val base = Store.recording(rec.id) ?: rec // keep a rename made while recording
-        val done = base.copy(durationMs = bytesWritten / BYTES_PER_MS, segments = segments.toList())
+        val done = base.copy(durationMs = bytesWritten / BYTES_PER_MS, segments = segments.toList(), marks = marks.toList())
         Store.upsertRecording(done)
         active = null
         partial = ""

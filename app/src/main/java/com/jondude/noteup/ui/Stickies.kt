@@ -73,14 +73,15 @@ private fun StickyNote(s: Sticky, xf: InkView.Xf, onChange: (Sticky) -> Unit, on
     val hPx = (s.h + dh) * xf.scale
     val bar = 30.dp
     val textSize = with(density) { (17f * xf.scale).coerceAtLeast(10f * density.density).toSp() }
-    val fill = Color(STICKY_COLORS[s.color.coerceIn(0, STICKY_COLORS.lastIndex)])
+    val plain = s.color == com.jondude.noteup.data.PLAIN_TEXT_BOX
+    val fill = if (plain) Color.Transparent else Color(STICKY_COLORS[s.color.coerceIn(0, STICKY_COLORS.lastIndex)])
 
     Box(
         Modifier
             .offset { IntOffset(leftPx.roundToInt(), topPx.roundToInt()) }
             .size(with(density) { wPx.toDp() }, with(density) { hPx.toDp() }.coerceAtLeast(bar + 24.dp))
             .background(fill)
-            .border(2.dp, Color.Black)
+            .border(if (plain) 1.dp else 2.dp, if (plain) Color(0x99000000) else Color.Black)
     ) {
         // top bar: drag to move
         Row(

@@ -205,7 +205,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     LaunchedEffect(Settings.scribbleErase) { ink.scribbleErase = Settings.scribbleErase }
     DisposableEffect(Unit) {
         ink.recordingClock = { Recorder.clock() }
-        onDispose { ed.leave(); ink.recordingClock = null }
+        onDispose { ed.leave(); ink.recordingClock = null; com.jondude.noteup.audio.Speaker.stop() }
     }
 
     // Ink replay: while audio plays, strokes written later in the recording are drawn faded.
@@ -525,6 +525,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                 else if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startRecording()
                 else micPermission.launch(Manifest.permission.RECORD_AUDIO)
             }
+            if (Recorder.active != null) ToolItem("★ ${Recorder.marks.size}") { Recorder.mark() }
             ToolItem("Meeting", on = dock >= 0) { dock = if (dock >= 0) -1 else 0 }
             ToolItem("✦ Claude", on = panel.kind == PanelKind.CLAUDE) {
                 panel = if (panel.kind == PanelKind.CLAUDE) Panel() else Panel(PanelKind.CLAUDE, "Claude")
@@ -664,18 +665,20 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                 exportStatus?.let { T(it, italic = true, color = Ink.Gray, size = 14.sp) }
             }
         }
-        "sticky" -> InkDialog("New sticky note", onDismiss = { dialog = null }) {
-            T("Pick a colour. Drag its top bar to move it, drag the corner to resize, ✕ to delete. It stays on this page until you delete it.",
+        "sticky" -> InkDialog("Sticky note or text box", onDismiss = { dialog = null }) {
+            T("Pick a colour, or Aa for plain typed text. Drag its top bar to move it, drag the corner to resize, ✕ to delete. It stays on this page until you delete it.",
                 size = 14.sp, color = Ink.Gray)
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 STICKY_COLORS.forEachIndexed { ci, c ->
                     Box(Modifier.size(52.dp).background(androidx.compose.ui.graphics.Color(c)).border(2.dp, Ink.Black).inkClick {
                         val (cx, cy) = ink.viewCenterPage()
-                        val st = Sticky(x = (cx - 120f).coerceIn(0f, PAGE_W - 240f), y = (cy - 90f).coerceIn(0f, PAGE_H - 180f), color = ci)
+                        val plain = ci == com.jondude.noteup.data.PLAIN_TEXT_BOX
+                        val st = Sticky(x = (cx - 120f).coerceIn(0f, PAGE_W - 240f), y = (cy - 90f).coerceIn(0f, PAGE_H - 180f), color = ci,
+                            w = if (plain) 300f else 240f, h = if (plain) 120f else 180f)
                         ed.update { p -> p.copy(stickies = p.stickies + st) }
                         dialog = null
-                    })
+                    }, contentAlignment = Alignment.Center) { if (ci == com.jondude.noteup.data.PLAIN_TEXT_BOX) T("Aa", sans = true, bold = true) }
                 }
             }
         }
@@ -688,6 +691,10 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                 dialog = null
             },
             onIndent = { ed.flush(); Store.indentPage(nb.id, pageId) },
+            onMove = { dir ->
+                ed.flush()
+                if (Store.movePage(nb.id, pageId, dir)) index = Store.notebook(nb.id)?.pageIds?.indexOf(pageId)?.coerceAtLeast(0) ?: safeIndex
+            },
             onOutdent = {
                 ed.flush()
                 if (Store.outdentPage(nb.id, pageId)) index = Store.notebook(nb.id)?.pageIds?.indexOf(pageId)?.coerceAtLeast(0) ?: safeIndex
@@ -867,7 +874,7 @@ private fun ClaudePanel(
 @Composable
 private fun PagesDialog(
     nb: Notebook, current: Int,
-    onPick: (Int) -> Unit, onDelete: () -> Unit, onIndent: () -> Unit, onOutdent: () -> Unit, onSubpage: () -> Unit,
+    onPick: (Int) -> Unit, onDelete: () -> Unit, onIndent: () -> Unit, onOutdent: () -> Unit, onSubpage: () -> Unit, onMove: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     InkDialog("${nb.title} — ${nb.pageIds.size} pages", onDismiss = onDismiss) {
@@ -898,6 +905,8 @@ private fun PagesDialog(
             InkButton("+ Subpage", small = true, onClick = onSubpage)
             InkButton("Indent →", small = true, enabled = here != null && current > 0, onClick = onIndent)
             InkButton("← Outdent", small = true, enabled = here != null && nb.parentOf(here) != null, onClick = onOutdent)
+            InkButton("▲", small = true, onClick = { onMove(-1) })
+            InkButton("▼", small = true, onClick = { onMove(1) })
         }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

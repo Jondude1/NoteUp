@@ -22,6 +22,8 @@ data class Notebook(
     val pageIds: List<String> = emptyList(),
     /** Sub-page nesting: page id -> parent page id. [pageIds] stays in outline order (a page is followed by its sub-pages). */
     val parents: Map<String, String> = emptyMap(),
+    /** The one-page-a-day journal notebook. */
+    val daily: Boolean = false,
 ) {
     fun parentOf(pid: String): String? = parents[pid]?.takeIf { it in pageIds }
 
@@ -49,7 +51,10 @@ data class Notebook(
 }
 
 /** Sticky note colours, as ARGB. */
-val STICKY_COLORS = listOf(0xFFFFF59D.toInt(), 0xFFF8BBD0.toInt(), 0xFFBBDEFB.toInt(), 0xFFC8E6C9.toInt(), 0xFFFFCC80.toInt())
+val STICKY_COLORS = listOf(0xFFFFF59D.toInt(), 0xFFF8BBD0.toInt(), 0xFFBBDEFB.toInt(), 0xFFC8E6C9.toInt(), 0xFFFFCC80.toInt(), 0x00FFFFFF)
+
+/** The last sticky colour is no colour: a plain typed text box. */
+const val PLAIN_TEXT_BOX = 5
 
 /** A movable note stuck on a page for temporary information. Stays until deleted. */
 @Serializable
@@ -126,6 +131,8 @@ data class Page(
     /** AI-generated title and topic tags. */
     val title: String? = null,
     val tags: List<String> = emptyList(),
+    /** For the Daily notebook: the date (yyyy-MM-dd) this page is for. */
+    val day: String? = null,
     val updatedAt: Long = 0,
 )
 
@@ -145,6 +152,8 @@ data class Recording(
     val summary: String? = null,
     /** NoteStyle name the summary was written in. */
     val summaryStyle: String? = null,
+    /** ★ marks made while recording, as ms into the audio. */
+    val marks: List<Long> = emptyList(),
     val updatedAt: Long = 0,
 )
 

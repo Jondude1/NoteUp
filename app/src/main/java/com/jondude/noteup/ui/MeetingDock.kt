@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.sp
 import com.jondude.noteup.audio.AutoMinutes
 import com.jondude.noteup.audio.Player
 import com.jondude.noteup.audio.Recorder
+import com.jondude.noteup.audio.Speaker
+import com.jondude.noteup.ai.Marks
 import com.jondude.noteup.data.Documents
 import com.jondude.noteup.data.Recording
 import com.jondude.noteup.data.Store
@@ -63,6 +65,7 @@ fun MeetingDock(recs: List<Recording>, tab: Int, onTab: (Int) -> Unit, onOpenRec
                 ToolItem(if (i == 0 && job != null) "Notes …" else label, on = tab == i) { onTab(if (tab == i) -1 else i) }
             }
             Spacer(Modifier.weight(1f))
+            if (live) ToolItem("★ Mark (${Recorder.marks.size})") { Recorder.mark() }
             if (recs.size > 1) {
                 T("${recs.indexOf(rec) + 1}/${recs.size}", sans = true, size = 13.sp, color = Ink.Gray)
                 ToolItem("‹") { selId = recs[(recs.indexOf(rec) + 1) % recs.size].id }
@@ -97,6 +100,10 @@ private fun NotesTab(rec: Recording, live: Boolean, job: String?) {
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     InkButton("Copy", small = true) { copyText(ctx, rec.summary) }
+                    InkButton("Share", small = true) { shareText(ctx, rec.title, meetingText(rec, withTranscript = false)) }
+                    InkButton(if (Speaker.speaking) "■ Stop reading" else "🔊 Read aloud", small = true, on = Speaker.speaking) {
+                        if (Speaker.speaking) Speaker.stop() else Speaker.speak(ctx, rec.summary)
+                    }
                     InkButton("Rewrite", small = true) { AutoMinutes.redo(ctx, rec.id, NoteStyle.from(rec.summaryStyle)) }
                 }
                 Spacer(Modifier.height(14.dp))
@@ -118,10 +125,23 @@ private fun NotesTab(rec: Recording, live: Boolean, job: String?) {
 
 @Composable
 private fun TranscriptTab(rec: Recording, live: Boolean) {
+    val ctx = LocalContext.current
     val segs = if (live) Recorder.segments.toList() else rec.segments
+    val marks = if (live) Recorder.marks.toList() else rec.marks
     LaunchedEffect(Player.playing) { while (Player.playing) { Player.tick(); delay(250) } }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
         if (segs.isEmpty() && !live) item { T("No transcript for this recording.", italic = true, color = Ink.Gray) }
+        if (!live && segs.isNotEmpty()) item {
+            InkButton("Share transcript", small = true) { shareText(ctx, rec.title, meetingText(rec, withTranscript = true)) }
+            Spacer(Modifier.height(6.dp))
+        }
+        if (marks.isNotEmpty()) item {
+            SectionLabel("★ Marked moments")
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                marks.sorted().forEach { m -> ToolItem("★ ${fmtTime(m)}", enabled = !live) { Player.play(rec, maxOf(0L, m - 3000)) } }
+            }
+            Spacer(Modifier.height(6.dp))
+        }
         if (live) item {
             T("● Recording ${fmtTime(Recorder.elapsedMs)}", sans = true, bold = true, size = 14.sp)
             Recorder.status?.let { T(it, size = 13.sp, italic = true, color = Ink.Gray) }
@@ -132,7 +152,8 @@ private fun TranscriptTab(rec: Recording, live: Boolean) {
                 Modifier.fillMaxWidth().background(if (current) Ink.Black else Ink.White)
                     .inkClick(enabled = !live) { Player.play(rec, s.startMs) }.padding(vertical = 5.dp, horizontal = 4.dp)
             ) {
-                T("${fmtTime(s.startMs)}${s.speaker?.let { " · $it" } ?: ""}", size = 12.sp, sans = true, color = if (current) Ink.White else Ink.Gray)
+                val starred = Marks.near(marks, s.startMs, s.endMs)
+                T("${if (starred) "★ " else ""}${fmtTime(s.startMs)}${s.speaker?.let { " · $it" } ?: ""}", size = 12.sp, sans = true, color = if (current) Ink.White else Ink.Gray)
                 T(s.text, size = 16.sp, color = if (current) Ink.White else Ink.Black)
             }
         }
@@ -181,4 +202,25 @@ private fun RecordingTab(rec: Recording, live: Boolean, onOpenRecording: (String
             status?.let { T(it, italic = true, size = 13.sp, color = Ink.Gray, modifier = Modifier.padding(top = 6.dp)) }
         }
     }
+}
+
+/** The meeting as plain text for sharing: title, notes, optionally the full transcript. */
+internal fun meetingText(rec: Recording, withTranscript: Boolean): String = buildString {
+    append(rec.title).append("\n")
+    append(java.text.SimpleDateFormat("EEEE, MMMM d yyyy", java.util.Locale.US).format(java.util.Date(rec.createdAt))).append("\n\n")
+    rec.summary?.let { append(it.trim()).append("\n\n") }
+    if (rec.marks.isNotEmpty()) append("Marked moments: ").append(rec.marks.sorted().joinToString(", ") { fmtTime(it) }).append("\n\n")
+    if (withTranscript && rec.segments.isNotEmpty()) {
+        append("TRANSCRIPT\n")
+        rec.segments.forEach { append("[").append(fmtTime(it.startMs)).append("] ").append(it.speaker?.let { s -> "$s: " } ?: "").append(it.text).append("\n") }
+    }
+}.trim()
+
+internal fun shareText(ctx: android.content.Context, subject: String, body: String) {
+    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(android.content.Intent.EXTRA_SUBJECT, subject)
+        putExtra(android.content.Intent.EXTRA_TEXT, body)
+    }
+    ctx.startActivity(android.content.Intent.createChooser(send, "Share").addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
 }

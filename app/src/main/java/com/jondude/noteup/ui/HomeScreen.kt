@@ -196,7 +196,12 @@ private fun TodayTab(onOpenPage: (String, Int) -> Unit) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        Header("Today") { InkButton(if (busy) "Writing…" else "Refresh brief", small = true, enabled = !busy) { make() } }
+        Header("Today") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                InkButton("Today's page", small = true) { val (id, idx) = Store.dailyPage(); onOpenPage(id, idx) }
+                InkButton(if (busy) "Writing…" else "Refresh brief", small = true, enabled = !busy) { make() }
+            }
+        }
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 28.dp)) {
             SectionLabel("Calendar")
             when {

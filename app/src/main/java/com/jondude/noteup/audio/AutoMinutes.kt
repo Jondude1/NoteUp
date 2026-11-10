@@ -120,7 +120,7 @@ object AutoMinutes {
         working[recId] = "Writing the meeting notes…"
         val transcript = rec.segments.joinToString("\n") { "[${fmtTime(it.startMs)}] ${it.text}" }
         val out = try {
-            AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, notes, style), null, 1800)
+            AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, notes, style, com.jondude.noteup.ai.Marks.context(rec.marks, rec.segments.map { it.startMs to it.text })), null, 1800)
         } catch (e: Exception) {
             toast(ctx, "Couldn't write meeting notes: ${e.message}")
             return
