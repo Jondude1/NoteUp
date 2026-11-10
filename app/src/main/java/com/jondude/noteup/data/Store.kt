@@ -149,7 +149,62 @@ object Store {
         val nb = notebook(nbId) ?: return
         if (nb.pageIds.size <= 1) return
         removePageFiles(pageId)
-        updateNotebook(nb.copy(pageIds = nb.pageIds - pageId))
+        // its sub-pages move up a level
+        val up = nb.parentOf(pageId)
+        val parents = nb.parents.toMutableMap()
+        parents.remove(pageId)
+        for ((k, v) in nb.parents) if (v == pageId) { if (up != null) parents[k] = up else parents.remove(k) }
+        updateNotebook(nb.copy(pageIds = nb.pageIds - pageId, parents = parents))
+    }
+
+    /** New page nested under [parentId], placed after that page's existing sub-pages. */
+    fun addSubpage(nbId: String, parentId: String): Page {
+        val nb = notebook(nbId)!!
+        val at = nb.pageIds.indexOf(parentId).takeIf { it >= 0 } ?: nb.pageIds.lastIndex
+        val p = Page(notebookId = nbId)
+        savePage(p)
+        val ids = nb.pageIds.toMutableList()
+        ids.add(nb.subtreeEnd(at), p.id)
+        updateNotebook(nb.copy(pageIds = ids, parents = nb.parents + (p.id to nb.pageIds[at])))
+        return p
+    }
+
+    /** Make the page a sub-page of the page just above it at the same level. Returns false if there is none. */
+    fun indentPage(nbId: String, pageId: String): Boolean {
+        val nb = notebook(nbId) ?: return false
+        val i = nb.pageIds.indexOf(pageId)
+        if (i <= 0) return false
+        val mine = nb.parentOf(pageId)
+        var j = i - 1
+        while (j >= 0) {
+            val c = nb.pageIds[j]
+            if (nb.parentOf(c) == mine) {
+                updateNotebook(nb.copy(parents = nb.parents + (pageId to c)))
+                return true
+            }
+            if (nb.depth(c) < nb.depth(pageId)) return false
+            j--
+        }
+        return false
+    }
+
+    /** Move the page (with its sub-pages) up one level, to just after its old parent's branch. */
+    fun outdentPage(nbId: String, pageId: String): Boolean {
+        val nb = notebook(nbId) ?: return false
+        val parent = nb.parentOf(pageId) ?: return false
+        val i = nb.pageIds.indexOf(pageId)
+        val block = nb.pageIds.subList(i, nb.subtreeEnd(i)).toList()
+        val rest = nb.pageIds - block.toSet()
+        val pi = rest.indexOf(parent)
+        val ids = rest.toMutableList()
+        // end of the parent's branch within the remaining pages
+        val tmp = nb.copy(pageIds = rest)
+        ids.addAll(tmp.subtreeEnd(pi), block)
+        val parents = nb.parents.toMutableMap()
+        val grand = nb.parentOf(parent)
+        if (grand != null) parents[pageId] = grand else parents.remove(pageId)
+        updateNotebook(nb.copy(pageIds = ids, parents = parents))
+        return true
     }
 
     // ---- pages ----

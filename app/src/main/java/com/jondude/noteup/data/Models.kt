@@ -20,6 +20,48 @@ data class Notebook(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val pageIds: List<String> = emptyList(),
+    /** Sub-page nesting: page id -> parent page id. [pageIds] stays in outline order (a page is followed by its sub-pages). */
+    val parents: Map<String, String> = emptyMap(),
+) {
+    fun parentOf(pid: String): String? = parents[pid]?.takeIf { it in pageIds }
+
+    fun depth(pid: String): Int {
+        var d = 0
+        var cur = parentOf(pid)
+        while (cur != null && d < 12) { d++; cur = parentOf(cur) }
+        return d
+    }
+
+    fun isDescendant(pid: String, ancestor: String): Boolean {
+        var cur = parentOf(pid)
+        var n = 0
+        while (cur != null && n < 12) { if (cur == ancestor) return true; cur = parentOf(cur); n++ }
+        return false
+    }
+
+    /** Index just past the last sub-page (at any depth) of the page at [index]. */
+    fun subtreeEnd(index: Int): Int {
+        val root = pageIds[index]
+        var i = index + 1
+        while (i < pageIds.size && isDescendant(pageIds[i], root)) i++
+        return i
+    }
+}
+
+/** Sticky note colours, as ARGB. */
+val STICKY_COLORS = listOf(0xFFFFF59D.toInt(), 0xFFF8BBD0.toInt(), 0xFFBBDEFB.toInt(), 0xFFC8E6C9.toInt(), 0xFFFFCC80.toInt())
+
+/** A movable note stuck on a page for temporary information. Stays until deleted. */
+@Serializable
+data class Sticky(
+    val id: String = newId(),
+    val x: Float,
+    val y: Float,
+    val w: Float = 240f,
+    val h: Float = 180f,
+    val text: String = "",
+    /** Index into [STICKY_COLORS]. */
+    val color: Int = 0,
 )
 
 /**
@@ -80,6 +122,7 @@ data class Page(
     /** File name of an imported PDF page image drawn behind the ink. */
     val background: String? = null,
     val texts: List<PageText> = emptyList(),
+    val stickies: List<Sticky> = emptyList(),
     /** AI-generated title and topic tags. */
     val title: String? = null,
     val tags: List<String> = emptyList(),

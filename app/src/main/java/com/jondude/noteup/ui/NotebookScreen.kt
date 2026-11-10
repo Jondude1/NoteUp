@@ -27,9 +27,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -68,6 +66,8 @@ import com.jondude.noteup.data.PAGE_H
 import com.jondude.noteup.data.PAGE_W
 import com.jondude.noteup.data.Page
 import com.jondude.noteup.data.PageText
+import com.jondude.noteup.data.STICKY_COLORS
+import com.jondude.noteup.data.Sticky
 import com.jondude.noteup.data.Reminders
 import com.jondude.noteup.data.Recording
 import com.jondude.noteup.data.Settings
@@ -506,6 +506,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             ToolItem("Undo") { ink.undo() }
             ToolItem("Redo") { ink.redo() }
             ToolItem("Paper") { dialog = "template" }
+            ToolItem("Sticky") { dialog = "sticky" }
             ToolItem("Sync ▶", on = tool == Tool.PLAY) { tool = if (tool == Tool.PLAY) Tool.PEN else Tool.PLAY }
             val rec = Recorder.active
             ToolItem(if (rec != null) "■ ${fmtTime(Recorder.elapsedMs)}" else "● Rec", on = rec != null) {
@@ -548,6 +549,12 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         Row(Modifier.weight(1f).fillMaxWidth()) {
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 AndroidView(factory = { ink }, modifier = Modifier.fillMaxSize())
+                StickyLayer(
+                    stickies = ed.page?.stickies.orEmpty(),
+                    xf = ink.xf,
+                    onChange = { st -> ed.update { p -> p.copy(stickies = p.stickies.map { if (it.id == st.id) st else it }) } },
+                    onDelete = { id -> ed.update { p -> p.copy(stickies = p.stickies.filterNot { it.id == id }) } },
+                )
             }
             if (panel.kind != PanelKind.NONE) {
                 VRule(Modifier.fillMaxHeight())
@@ -583,8 +590,15 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             ToolItem("‹ Prev", enabled = safeIndex > 0) { turn(-1) }
             Spacer(Modifier.weight(1f))
-            T("${safeIndex + 1} / ${nb.pageIds.size}", sans = true, size = 15.sp)
+            ToolItem("${"↳ ".repeat(nb.depth(pageId).coerceAtMost(3))}${safeIndex + 1} / ${nb.pageIds.size}") { dialog = "pages" }
             Spacer(Modifier.weight(1f))
+            ToolItem("+ Subpage") {
+                ed.flush()
+                Store.addSubpage(nb.id, pageId)
+                val n = Store.notebook(nb.id)
+                index = n?.pageIds?.indexOfLast { n.parentOf(it) == pageId }?.coerceAtLeast(0) ?: safeIndex
+                scope.launch { Flash.blink() }
+            }
             ToolItem("+ Page") {
                 ed.flush()
                 Store.addPage(nb.id, safeIndex)
@@ -639,12 +653,42 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                 exportStatus?.let { T(it, italic = true, color = Ink.Gray, size = 14.sp) }
             }
         }
-        "pages" -> PagesDialog(nb, safeIndex, onPick = { ed.flush(); index = it; dialog = null }, onDelete = {
-            ed.flush()
-            Store.deletePage(nb.id, pageId)
-            index = (safeIndex - 1).coerceAtLeast(0)
-            dialog = null
-        }, onDismiss = { dialog = null })
+        "sticky" -> InkDialog("New sticky note", onDismiss = { dialog = null }) {
+            T("Pick a colour. Drag its top bar to move it, drag the corner to resize, ✕ to delete. It stays on this page until you delete it.",
+                size = 14.sp, color = Ink.Gray)
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                STICKY_COLORS.forEachIndexed { ci, c ->
+                    Box(Modifier.size(52.dp).background(androidx.compose.ui.graphics.Color(c)).border(2.dp, Ink.Black).inkClick {
+                        val (cx, cy) = ink.viewCenterPage()
+                        val st = Sticky(x = (cx - 120f).coerceIn(0f, PAGE_W - 240f), y = (cy - 90f).coerceIn(0f, PAGE_H - 180f), color = ci)
+                        ed.update { p -> p.copy(stickies = p.stickies + st) }
+                        dialog = null
+                    })
+                }
+            }
+        }
+        "pages" -> PagesDialog(nb, safeIndex,
+            onPick = { ed.flush(); index = it; dialog = null },
+            onDelete = {
+                ed.flush()
+                Store.deletePage(nb.id, pageId)
+                index = (safeIndex - 1).coerceAtLeast(0)
+                dialog = null
+            },
+            onIndent = { ed.flush(); Store.indentPage(nb.id, pageId) },
+            onOutdent = {
+                ed.flush()
+                if (Store.outdentPage(nb.id, pageId)) index = Store.notebook(nb.id)?.pageIds?.indexOf(pageId)?.coerceAtLeast(0) ?: safeIndex
+            },
+            onSubpage = {
+                ed.flush()
+                Store.addSubpage(nb.id, pageId)
+                val n = Store.notebook(nb.id)
+                index = n?.pageIds?.indexOfLast { n.parentOf(it) == pageId }?.coerceAtLeast(0) ?: safeIndex
+                dialog = null
+            },
+            onDismiss = { dialog = null })
     }
 
     tappedNote?.let { note ->
@@ -810,30 +854,44 @@ private fun ClaudePanel(
 }
 
 @Composable
-private fun PagesDialog(nb: Notebook, current: Int, onPick: (Int) -> Unit, onDelete: () -> Unit, onDismiss: () -> Unit) {
+private fun PagesDialog(
+    nb: Notebook, current: Int,
+    onPick: (Int) -> Unit, onDelete: () -> Unit, onIndent: () -> Unit, onOutdent: () -> Unit, onSubpage: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     InkDialog("${nb.title} — ${nb.pageIds.size} pages", onDismiss = onDismiss) {
-        LazyVerticalGrid(GridCells.Adaptive(110.dp), Modifier.heightIn(max = 460.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(Modifier.heightIn(max = 420.dp)) {
             itemsIndexed(nb.pageIds) { i, pid ->
+                val depth = nb.depth(pid)
                 val thumb by produceState<ImageBitmap?>(null, pid) {
                     value = withContext(Dispatchers.Default) {
-                        Documents.renderThumb(nb, Store.page(pid, nb.id), 220).asImageBitmap()
+                        Documents.renderThumb(nb, Store.page(pid, nb.id), 160).asImageBitmap()
                     }
                 }
-                Column(Modifier.inkClick { onPick(i) }) {
-                    Box(Modifier.fillMaxWidth().aspectRatio(PAGE_W / PAGE_H)
+                Row(Modifier.fillMaxWidth().inkClick { onPick(i) }.padding(vertical = 5.dp).padding(start = (depth * 28).dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (depth > 0) T("↳ ", sans = true, color = Ink.Gray)
+                    Box(Modifier.width(54.dp).aspectRatio(PAGE_W / PAGE_H)
                         .border(if (i == current) 3.dp else Ink.Rule, Ink.Black).background(Ink.White)) {
                         thumb?.let { Image(it, null, Modifier.fillMaxSize()) }
                     }
+                    Spacer(Modifier.width(10.dp))
                     val title = Store.page(pid, nb.id).title
-                    T("${i + 1}${title?.let { " · $it" } ?: ""}", size = 12.sp, sans = true, bold = i == current, maxLines = 2)
+                    T("${i + 1}${title?.let { " · $it" } ?: ""}", size = 15.sp, sans = true, bold = i == current, maxLines = 2)
                 }
             }
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
+        val here = nb.pageIds.getOrNull(current)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            InkButton("+ Subpage", small = true, onClick = onSubpage)
+            InkButton("Indent →", small = true, enabled = here != null && current > 0, onClick = onIndent)
+            InkButton("← Outdent", small = true, enabled = here != null && nb.parentOf(here) != null, onClick = onOutdent)
+        }
+        Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            InkButton("Delete this page", enabled = nb.pageIds.size > 1, onClick = onDelete)
-            InkButton("Close", onClick = onDismiss)
+            InkButton("Delete this page", small = true, enabled = nb.pageIds.size > 1, onClick = onDelete)
+            InkButton("Close", small = true, onClick = onDismiss)
         }
     }
 }

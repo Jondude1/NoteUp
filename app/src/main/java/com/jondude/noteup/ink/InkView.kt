@@ -2,6 +2,9 @@ package com.jondude.noteup.ink
 
 import android.annotation.SuppressLint
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -432,7 +435,18 @@ class InkView(context: Context) : View(context) {
         }
     }
 
+    /** Page-to-screen transform (scale, x offset, y offset), readable from Compose so sticky notes follow zoom and pan. */
+    class Xf(val scale: Float, val offX: Float, val offY: Float)
+    var xf by mutableStateOf(Xf(1f, 0f, 0f))
+        private set
+
+    /** The page point at the middle of what's on screen. */
+    fun viewCenterPage(): Pair<Float, Float> =
+        toPageX(width / 2f).coerceIn(0f, PAGE_W) to toPageY(height / 2f).coerceIn(0f, PAGE_H)
+
     override fun onDraw(canvas: Canvas) {
+        val cur = xf
+        if (cur.scale != scale || cur.offX != offX || cur.offY != offY) xf = Xf(scale, offX, offY)
         if ((cacheDirty || cache == null) && !previewing) rebuildCache()
         cache?.let {
             if (scale != cacheScale || offX != cacheOffX || offY != cacheOffY) {
