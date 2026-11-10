@@ -178,4 +178,21 @@ Every word of every chunk must appear exactly once, in order. Split a chunk into
 TRANSCRIPT:
 $numbered
 """.trimIndent()
+
+    /** Fixes what a speech recogniser got wrong, using what the notes say about the topic. */
+    fun cleanTranscript(numbered: String, context: String) = """
+Below are numbered lines from an automatic speech-to-text transcript of a meeting. They contain recognition mistakes.
+Fix them: wrong homophones ("their/there"), misheard names, product names and jargon, numbers, dates, missing or wrong
+capital letters and punctuation, and obvious run-together or split words. Use the context to decide what was really said.
+Do NOT summarise, reword, add, remove or merge lines. Keep each line's meaning and order. If a line is already right, return it unchanged.
+Never invent content you cannot infer from the line itself.
+
+CONTEXT (names and terms that are likely to come up):
+$context
+
+Reply with JSON only: {"lines":[{"i":0,"text":"corrected line"}, ...]} with one entry for every input line.
+
+LINES:
+$numbered
+""".trimIndent()
 }

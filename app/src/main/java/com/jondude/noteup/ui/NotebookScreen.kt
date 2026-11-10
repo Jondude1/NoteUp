@@ -172,6 +172,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
     var tappedNote by remember { mutableStateOf<MarginNote?>(null) }
     var renaming by remember { mutableStateOf(false) }
     var zoomPct by remember { mutableIntStateOf(100) }
+    var dock by remember { mutableIntStateOf(-1) }
     val circle = remember { CircleState() }
 
     LaunchedEffect(pageId) {
@@ -186,6 +187,14 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         ink.background = null
         ink.background = withContext(Dispatchers.IO) { Documents.loadBackground(p.background) }
     }
+    // when the notes for a recording on this page arrive, open the meeting tab on them
+    val notesReady = Store.recordings.count { it.pageId == pageId && it.summary != null }
+    var lastNotes by remember(pageId) { mutableIntStateOf(notesReady) }
+    LaunchedEffect(notesReady) {
+        if (notesReady > lastNotes) dock = 0
+        lastNotes = notesReady
+    }
+    LaunchedEffect(pageId) { dock = -1 }
     LaunchedEffect(inkColor) { ink.inkColor = inkColor }
     LaunchedEffect(nb.template) { ink.template = nb.template }
     LaunchedEffect(tool) { ink.tool = tool; if (tool != Tool.LASSO) selection = null }
@@ -353,7 +362,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
 
     fun startRecording() {
         if (Recorder.start(ctx, "${nb.title} · p${safeIndex + 1}", nb.id, pageId)) {
-            panel = Panel(PanelKind.TRANSCRIPT, "Transcript")
+            dock = 1
         }
     }
 
@@ -516,9 +525,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                 else if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startRecording()
                 else micPermission.launch(Manifest.permission.RECORD_AUDIO)
             }
-            ToolItem("Transcript", on = panel.kind == PanelKind.TRANSCRIPT) {
-                panel = if (panel.kind == PanelKind.TRANSCRIPT) Panel() else Panel(PanelKind.TRANSCRIPT, "Transcript")
-            }
+            ToolItem("Meeting", on = dock >= 0) { dock = if (dock >= 0) -1 else 0 }
             ToolItem("✦ Claude", on = panel.kind == PanelKind.CLAUDE) {
                 panel = if (panel.kind == PanelKind.CLAUDE) Panel() else Panel(PanelKind.CLAUDE, "Claude")
             }
@@ -547,6 +554,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             }
         }
 
+        Column(Modifier.weight(1f).fillMaxWidth()) {
         Row(Modifier.weight(1f).fillMaxWidth()) {
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 AndroidView(factory = { ink }, modifier = Modifier.fillMaxSize())
@@ -584,6 +592,8 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
                     }
                 }
             }
+        }
+        MeetingDock(pageRecordings(), dock, { dock = it }, onOpenRecording)
         }
 
         HRule()

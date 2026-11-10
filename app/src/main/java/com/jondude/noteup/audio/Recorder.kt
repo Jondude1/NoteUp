@@ -59,6 +59,8 @@ object Recorder {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var thread: Thread? = null
     @Volatile private var running = false
+    /** Names and terms from the notebook, passed to the recogniser as hints. */
+    @Volatile internal var vocab: List<String> = emptyList()
     @Volatile private var bytesWritten = 0L
 
     /** Current position in the active recording, for linking pen strokes to audio. */
@@ -93,6 +95,7 @@ object Recorder {
         // a foreground service keeps the microphone alive when the screen locks or you switch apps
         try { ContextCompat.startForegroundService(appCtx!!, Intent(appCtx, RecordingService::class.java)) } catch (_: Exception) {}
 
+        vocab = Vocab.build(notebookId)
         val useWhisper = Settings.sttEngine == SttEngine.WHISPER
         if (!useWhisper) main.post { OnDeviceStt.start(ctx.applicationContext) }
 
@@ -178,7 +181,7 @@ object Recorder {
         val recId = active?.id
         scope.launch {
             try {
-                val text = order.withLock { AiClient.transcribe(Wav.wrap(pcm)) }
+                val text = order.withLock { AiClient.transcribe(Wav.wrap(pcm), vocab.joinToString(", ")) }
                 if (text.isNotBlank()) main.post { addSegment(Segment(startMs, endMs, text), recId) }
             } catch (e: Exception) {
                 main.post { status = e.message }
@@ -251,6 +254,8 @@ private object OnDeviceStt : RecognitionListener {
             putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, SAMPLE_RATE)
             putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_AUDIO_SOURCE)
             putExtra(RecognizerIntent.EXTRA_ENABLE_FORMATTING, RecognizerIntent.FORMATTING_OPTIMIZE_QUALITY)
+            putExtra(RecognizerIntent.EXTRA_MASK_OFFENSIVE_WORDS, false)
+            Recorder.vocab.takeIf { it.isNotEmpty() }?.let { putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(it)) }
         }
         try {
             r.startListening(intent)

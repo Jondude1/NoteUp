@@ -138,13 +138,14 @@ object AiClient {
     }
 
     /** Sends a WAV clip to an OpenAI-compatible /v1/audio/transcriptions endpoint (faster-whisper-server, whisper.cpp server, etc). */
-    suspend fun transcribe(wav: ByteArray): String = withContext(Dispatchers.IO) {
+    suspend fun transcribe(wav: ByteArray, hint: String = ""): String = withContext(Dispatchers.IO) {
         val base = Settings.whisperUrl.trimEnd('/')
         if (base.isBlank()) throw AiException("Set your Whisper server address in Settings.")
         val form = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("model", Settings.whisperModel)
             .addFormDataPart("language", Settings.language.substringBefore('-'))
             .addFormDataPart("response_format", "json")
+            .apply { if (hint.isNotBlank()) addFormDataPart("prompt", hint.take(500)) }
             .addFormDataPart("file", "clip.wav", wav.toRequestBody("audio/wav".toMediaType()))
             .build()
         val rb = Request.Builder().url("$base/v1/audio/transcriptions").post(form)

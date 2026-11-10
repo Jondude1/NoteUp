@@ -130,7 +130,7 @@ data class Page(
 )
 
 @Serializable
-data class Segment(val startMs: Long, val endMs: Long, val text: String, val speaker: String? = null)
+data class Segment(val startMs: Long, val endMs: Long, val text: String, val speaker: String? = null, /** What the recogniser first heard, if the AI later corrected the wording. */ val raw: String? = null)
 
 @Serializable
 data class Recording(
