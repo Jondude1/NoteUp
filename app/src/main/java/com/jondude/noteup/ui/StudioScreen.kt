@@ -97,7 +97,7 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
         busy = "Reading your notebook…"; error = null
         scope.launch {
             try {
-                val chunks = withContext(Dispatchers.Default) { Corpus.build(if (everything) null else nbId) }
+                val chunks = withContext(Dispatchers.Default) { Corpus.build(if (everything) null else nbId, q) }
                 val history = Store.studioOf(nbId).filter { it.kind == "chat" }.takeLast(3).map { it.title to it.body }
                 busy = "Thinking…"
                 val ans = AiClient.ask(Twists.SYSTEM, Twists.askCited(q, Corpus.prompt(chunks), history), null, 1500)

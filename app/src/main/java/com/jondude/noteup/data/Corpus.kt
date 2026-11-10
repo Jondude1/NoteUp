@@ -8,7 +8,7 @@ object Corpus {
     class Chunk(val ref: CiteRef, val text: String)
 
     /** [nbId] = one notebook (its pages, recordings made on it, and its sources); null = everything. */
-    fun build(nbId: String?, maxChars: Int = 110_000): List<Chunk> {
+    fun build(nbId: String?, query: String? = null, maxChars: Int = 110_000): List<Chunk> {
         val items = ArrayList<Pair<CiteRef, String>>() // ref.n filled in below
         val notebooks = Store.notebooks.filter { nbId == null || it.id == nbId }
         fun ref(kind: String, id: String, label: String, index: Int = 0) = CiteRef(0, kind, id, label, index)
@@ -45,14 +45,8 @@ object Corpus {
                 items.add(ref("rec", r.id, "Transcript: ${r.title}${if (parts.size > 1) " (part ${k + 1})" else ""}") to part)
             }
         }
-        val out = ArrayList<Chunk>()
-        var used = 0
-        for ((r, t) in items) {
-            if (used + t.length > maxChars) continue
-            used += t.length
-            out.add(Chunk(r.copy(n = out.size + 1), t))
-        }
-        return out
+        val picked = com.jondude.noteup.ai.Retrieve.select(items.map { (r, t) -> com.jondude.noteup.ai.Retrieve.Item(r.kind + r.id, t) }, query, maxChars)
+        return picked.mapIndexed { n, (i, text) -> Chunk(items[i].first.copy(n = n + 1), text) }
     }
 
     fun prompt(chunks: List<Chunk>): String =
