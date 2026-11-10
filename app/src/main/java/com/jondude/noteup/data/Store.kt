@@ -72,23 +72,44 @@ object Store {
         pagesVersion++
     }
 
-    inline fun <reified T> read(name: String): T? = try {
+    /**
+     * Reads a saved file. If it is damaged (power loss, full storage) the bad copy is kept as .corrupt and the
+     * last good copy (.bak) is used, so a bad write never silently becomes an empty notebook list.
+     */
+    inline fun <reified T> read(name: String): T? {
         val f = File(root, name)
-        if (f.exists()) json.decodeFromString<T>(f.readText()) else null
-    } catch (e: Exception) {
-        null
+        if (!f.exists()) return recoverBackup(name)
+        return try { json.decodeFromString<T>(f.readText()) } catch (e: Exception) {
+            quarantine(f)
+            val bak = File(root, "$name.bak")
+            if (bak.exists()) try { json.decodeFromString<T>(bak.readText()).also { bak.copyTo(f, overwrite = true) } } catch (e2: Exception) { null } else null
+        }
     }
 
+    inline fun <reified T> recoverBackup(name: String): T? {
+        val bak = File(root, "$name.bak")
+        return if (bak.exists()) try { json.decodeFromString<T>(bak.readText()) } catch (e: Exception) { null } else null
+    }
+
+    fun quarantine(f: File) {
+        try { f.copyTo(File(f.parentFile, f.name + ".corrupt"), overwrite = true) } catch (_: Exception) {}
+    }
+
+    /** Writes to a temp file, keeps the previous good version as .bak, then swaps the new one in. */
     fun writeNow(name: String, text: String) {
         val f = File(root, name)
         f.parentFile?.mkdirs()
         val tmp = File(f.parentFile, f.name + ".tmp")
         tmp.writeText(text)
-        tmp.renameTo(f)
+        if (tmp.length() == 0L && text.isNotEmpty()) { tmp.delete(); throw java.io.IOException("Couldn't save $name (storage full?)") }
+        if (f.exists() && f.length() > 2 && !name.startsWith("pages/")) try { f.copyTo(File(f.parentFile, f.name + ".bak"), overwrite = true) } catch (_: Exception) {}
+        if (!tmp.renameTo(f)) { f.delete(); if (!tmp.renameTo(f)) { f.writeText(text); tmp.delete() } }
     }
 
+    @Volatile var saveError: String? = null
+
     private fun writeAsync(name: String, text: String) {
-        io.launch { synchronized(this@Store) { writeNow(name, text) } }
+        io.launch { synchronized(this@Store) { try { writeNow(name, text) } catch (e: Exception) { saveError = e.message } } }
         onLocalChange?.invoke()
     }
 

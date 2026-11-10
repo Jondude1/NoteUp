@@ -35,6 +35,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { java.io.File(filesDir, "crash.log").appendText("${java.util.Date()} ${t.name}\n${e.stackTraceToString().take(4000)}\n\n") } catch (_: Exception) {}
+            prev?.uncaughtException(t, e)
+        }
         Store.init(applicationContext)
         Settings.init(applicationContext)
         com.jondude.noteup.data.Indexer.start()

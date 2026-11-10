@@ -30,6 +30,25 @@ class AiException(msg: String) : Exception(msg)
  * fall back to the other one if the first fails.
  */
 object AiClient {
+    /** Runs a request, retrying a couple of times on rate limits, overloads and network blips. */
+    private fun send(req: Request): okhttp3.Response {
+        var last: Exception? = null
+        for (attempt in 0..2) {
+            try {
+                val r = http.newCall(req).execute()
+                if (r.code == 429 || r.code == 529 || r.code in 500..503) {
+                    if (attempt == 2) return r
+                    r.close(); Thread.sleep(1500L * (attempt + 1) * (attempt + 1)); continue
+                }
+                return r
+            } catch (e: java.io.IOException) {
+                last = e
+                if (attempt < 2) Thread.sleep(1200L * (attempt + 1))
+            }
+        }
+        throw AiException("Network problem: ${last?.message ?: "couldn't reach the AI"}")
+    }
+
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS)
@@ -91,7 +110,7 @@ object AiClient {
             .header("anthropic-version", "2023-06-01")
             .post(body.toString().toRequestBody(JSON_TYPE))
             .build()
-        http.newCall(req).execute().use { res ->
+        send(req).use { res ->
             val text = res.body?.string().orEmpty()
             if (!res.isSuccessful) throw AiException("Claude error ${res.code}: ${errorMessage(text)}")
             val root = json.parseToJsonElement(text).jsonObject
@@ -124,7 +143,7 @@ object AiClient {
         val req = Request.Builder().url("https://api.anthropic.com/v1/messages")
             .header("x-api-key", Settings.claudeKey).header("anthropic-version", "2023-06-01")
             .post(body.toString().toRequestBody(JSON_TYPE)).build()
-        http.newCall(req).execute().use { res ->
+        send(req).use { res ->
             val text = res.body?.string().orEmpty()
             if (!res.isSuccessful) throw AiException("Claude web search error ${res.code}: ${errorMessage(text)}")
             val content = json.parseToJsonElement(text).jsonObject["content"] as? JsonArray ?: return@use emptyList<Discover.Candidate>()
