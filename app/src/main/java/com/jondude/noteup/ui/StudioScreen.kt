@@ -77,6 +77,7 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
     var found by remember { mutableStateOf<List<com.jondude.noteup.data.Discoverer.Found>>(emptyList()) }
     var topicText by remember { mutableStateOf(nb.title) }
     var wanted by remember { mutableStateOf(15) }
+    var studying by remember { mutableStateOf<StudioItem?>(null) }
 
     fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_LONG).show()
     fun aiReady(): Boolean {
@@ -166,6 +167,49 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
         }
     }
 
+    fun makeStudy(kind: String, title: String, count: Int, diff: String, ask: String) {
+        if (busy != null || !aiReady()) return
+        busy = "Making $title…"; error = null
+        scope.launch {
+            try {
+                val chunks = withContext(Dispatchers.Default) { Corpus.build(nbId, ask.ifBlank { null }, 50_000) }
+                if (chunks.isEmpty()) throw IllegalStateException("There's nothing in this notebook to work from yet.")
+                val ex = Corpus.prompt(chunks)
+                val prompt = when (kind) {
+                    "cards" -> Twists.cardsJson(ex, count, diff)
+                    "quiz" -> Twists.quizJson(ex, count, diff)
+                    "map" -> Twists.mapJson(ex)
+                    else -> Twists.tableJson(ex, ask)
+                }
+                var json: String? = null
+                for (attempt in 0..1) {
+                    val reply = AiClient.ask(Twists.SYSTEM, prompt, null, if (kind == "table") 2500 else 2000)
+                    val ok = when (kind) {
+                        "cards" -> com.jondude.noteup.ai.Study.cards(reply).size >= 2
+                        "quiz" -> com.jondude.noteup.ai.Study.quiz(reply).size >= 2
+                        "map" -> com.jondude.noteup.ai.Study.tree(reply) != null
+                        else -> com.jondude.noteup.ai.Study.table(reply) != null
+                    }
+                    if (ok) { json = com.jondude.noteup.ai.MiniJson.extract(reply); break }
+                }
+                if (json == null) throw IllegalStateException("The AI's answer wasn't usable. Try again, or add more material first.")
+                Store.upsertStudio(StudioItem(notebookId = nbId, kind = kind, title = title, body = json))
+            } catch (e: Exception) { error = e.message ?: "Something went wrong." }
+            busy = null
+        }
+    }
+
+    fun putOnPages(item: StudioItem) {
+        val drawings = when (item.kind) {
+            "map" -> com.jondude.noteup.ai.Study.tree(item.body)?.let { listOf(com.jondude.noteup.ai.MindLayout.layout(it)) }
+            else -> com.jondude.noteup.ai.Study.table(item.body)?.let { (c, r) -> com.jondude.noteup.ai.TableLayout.layout(c, r) }
+        }
+        if (drawings.isNullOrEmpty()) { error = "Couldn't lay that out."; return }
+        val idx = Store.addDrawingPages(nbId, item.title, drawings)
+        toast("Added ${drawings.size} page(s).")
+        onOpenPage(nbId, idx)
+    }
+
     val pickPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             busy = "Reading the PDF…"; error = null
@@ -206,7 +250,7 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
             1 -> SourcesTab(nbId, busy != null, onPaste = { dialog = "paste" }, onWeb = { dialog = "web" }, onPdf = { pickPdf.launch(arrayOf("application/pdf")) }, onDiscover = { dialog = "discover" },
                 onOverview = ::overview, onView = { viewSource = it }, onAsk = { q -> tab = 0; ask(q) },
                 onGuide = { s -> busy = "Reading ${s.title}…"; scope.launch { try { guideFor(s) } catch (e: Exception) { error = e.message }; busy = null } })
-            else -> MakeTab(nbId, busy != null, ::makeReport, ::openRef, onSaved = { idx -> toast("Saved as pages."); onOpenPage(nbId, idx) })
+            else -> MakeTab(nbId, busy != null, ::makeReport, ::makeStudy, { studying = it }, ::putOnPages, ::openRef, onSaved = { idx -> toast("Saved as pages."); onOpenPage(nbId, idx) })
         }
     }
 
@@ -303,6 +347,8 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
             }
         }
     }
+
+    studying?.let { StudyDialog(it) { studying = null } }
 
     viewSource?.let { id ->
         val s = Store.sources.firstOrNull { it.id == id }
@@ -441,7 +487,7 @@ private fun SourcesTab(
 }
 
 @Composable
-private fun MakeTab(nbId: String, busy: Boolean, make: (String, String, String) -> Unit, onCite: (CiteRef) -> Unit, onSaved: (Int) -> Unit) {
+private fun MakeTab(nbId: String, busy: Boolean, make: (String, String, String) -> Unit, makeStudy: (String, String, Int, String, String) -> Unit, onStudy: (StudioItem) -> Unit, onPut: (StudioItem) -> Unit, onCite: (CiteRef) -> Unit, onSaved: (Int) -> Unit) {
     val ctx = LocalContext.current
     var custom by remember { mutableStateOf("") }
     var open by remember { mutableStateOf<String?>(null) }
@@ -461,6 +507,26 @@ private fun MakeTab(nbId: String, busy: Boolean, make: (String, String, String) 
             InkButton("Create", on = true, enabled = !busy && custom.length > 5) { make("custom", custom.take(40), custom); custom = "" }
         }
         Spacer(Modifier.height(18.dp))
+        SectionLabel("Study and visuals")
+        var count by remember { mutableStateOf(10) }
+        var diff by remember { mutableStateOf("medium") }
+        var tableAsk by remember { mutableStateOf("") }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            T("How many", size = 13.sp, sans = true, color = Ink.Gray)
+            listOf(5, 10, 20).forEach { n -> InkButton("$n", small = true, on = count == n) { count = n } }
+            Spacer(Modifier.width(8.dp))
+            listOf("easy", "medium", "hard").forEach { d -> InkButton(d, small = true, on = diff == d) { diff = d } }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            InkButton("Flashcards", small = true, enabled = !busy) { makeStudy("cards", "Flashcards", count, diff, "") }
+            InkButton("Quiz", small = true, enabled = !busy) { makeStudy("quiz", "Quiz", count, diff, "") }
+            InkButton("Mind map", small = true, enabled = !busy) { makeStudy("map", "Mind map", 0, "", "") }
+            InkButton("Data table", small = true, enabled = !busy) { makeStudy("table", tableAsk.take(40).ifBlank { "Data table" }, 0, "", tableAsk) }
+        }
+        Spacer(Modifier.height(8.dp))
+        InkField(tableAsk, { tableAsk = it }, hint = "Optional: what the data table should compare (e.g. sensors, price and range)")
+        Spacer(Modifier.height(18.dp))
         SectionLabel("Made so far (${items.size})")
         if (items.isEmpty()) T("Nothing yet.", italic = true, color = Ink.Gray)
         items.forEach { it0 ->
@@ -470,8 +536,28 @@ private fun MakeTab(nbId: String, busy: Boolean, make: (String, String, String) 
                     T(it0.title, bold = true, size = 17.sp, modifier = Modifier.weight(1f), maxLines = 2)
                     T(dateOf(it0.createdAt), size = 12.sp, sans = true, color = Ink.Gray)
                 }
-                T(if (expanded) it0.body else it0.body.take(220).let { t -> if (it0.body.length > 220) "$t…" else t }, size = 15.sp, modifier = Modifier.padding(top = 4.dp))
-                if (expanded) {
+                val special = it0.kind in setOf("cards", "quiz", "map", "table")
+                val shown = if (!special) it0.body else when (it0.kind) {
+                    "cards" -> "${com.jondude.noteup.ai.Study.cards(it0.body).size} flashcards"
+                    "quiz" -> "${com.jondude.noteup.ai.Study.quiz(it0.body).size} multiple-choice questions"
+                    "map" -> com.jondude.noteup.ai.Study.tree(it0.body)?.let { t -> if (expanded) com.jondude.noteup.ai.Study.outline(t) else "${t.text} · ${t.kids.size} branches" } ?: "Couldn't read this one."
+                    else -> com.jondude.noteup.ai.Study.table(it0.body)?.let { (c, r) -> if (expanded) (listOf(c) + r).joinToString("\n") { row -> row.joinToString("  |  ") } else "${c.joinToString(" · ")} · ${r.size} rows" } ?: "Couldn't read this one."
+                }
+                T(if (expanded || special) shown else it0.body.take(220).let { t -> if (it0.body.length > 220) "$t…" else t }, size = 15.sp, modifier = Modifier.padding(top = 4.dp))
+                if (special) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        if (it0.kind == "cards" || it0.kind == "quiz") InkButton("Study", small = true, on = true) { onStudy(it0) }
+                        else InkButton("Put on pages", small = true, on = true) { onPut(it0) }
+                        if (it0.kind == "table") com.jondude.noteup.ai.Study.table(it0.body)?.let { (c, r) ->
+                            InkButton("Copy CSV", small = true) { copyText(ctx, com.jondude.noteup.ai.Csv.encode(c, r)) }
+                            InkButton("Share CSV", small = true) { shareText(ctx, it0.title, com.jondude.noteup.ai.Csv.encode(c, r)) }
+                        }
+                        if (it0.kind == "map") InkButton(if (expanded) "Hide outline" else "Outline", small = true) { open = if (expanded) null else it0.id }
+                        if (it0.kind == "table") InkButton(if (expanded) "Hide rows" else "Show rows", small = true) { open = if (expanded) null else it0.id }
+                        InkButton("Delete", small = true) { Store.deleteStudio(it0.id) }
+                    }
+                } else if (expanded) {
                     CiteChips(it0.refs, onCite)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
@@ -484,6 +570,74 @@ private fun MakeTab(nbId: String, busy: Boolean, make: (String, String, String) 
                 }
             }
             HRule(thickness = 1.dp)
+        }
+    }
+}
+
+
+/** Flashcards or quiz, one at a time. Missed ones come back later (twice at most) until you get them. */
+@Composable
+private fun StudyDialog(item: StudioItem, onClose: () -> Unit) {
+    val cards = remember(item.id) { if (item.kind == "cards") com.jondude.noteup.ai.Study.cards(item.body) else emptyList() }
+    val quiz = remember(item.id) { if (item.kind == "quiz") com.jondude.noteup.ai.Study.quiz(item.body) else emptyList() }
+    val total = maxOf(cards.size, quiz.size)
+    var run by remember(item.id) { mutableStateOf(com.jondude.noteup.ai.StudyRun(total)) }
+    var tick by remember { mutableStateOf(0) }
+    var revealed by remember { mutableStateOf(false) }
+    var picked by remember { mutableStateOf<Int?>(null) }
+    @Suppress("UNUSED_EXPRESSION") tick
+    InkDialog(item.title, onDismiss = onClose) {
+        val cur = run.current
+        if (total == 0) {
+            T("Nothing to study here.", italic = true); Spacer(Modifier.height(12.dp)); InkButton("Close", small = true, onClick = onClose)
+        } else if (cur == null) {
+            T("Done. ${run.firstTryRight} of $total right the first time.", bold = true, size = 18.sp)
+            if (run.missed.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp)); T("Worth another look:", size = 13.sp, sans = true, color = Ink.Gray)
+                Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                    run.missed.forEach { i ->
+                        T("- " + (if (cards.isNotEmpty()) "${cards[i].q} → ${cards[i].a}" else "${quiz[i].q} → ${quiz[i].options[quiz[i].answer]}"), size = 14.sp, modifier = Modifier.padding(vertical = 3.dp))
+                    }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                InkButton("Again", small = true, on = true) { run = com.jondude.noteup.ai.StudyRun(total); revealed = false; picked = null }
+                InkButton("Close", small = true, onClick = onClose)
+            }
+        } else {
+            T("${total - run.remaining + 1} of $total", size = 12.sp, sans = true, color = Ink.Gray)
+            Spacer(Modifier.height(6.dp))
+            if (cards.isNotEmpty()) {
+                val c = cards[cur]
+                T(c.q, bold = true, size = 19.sp)
+                Spacer(Modifier.height(10.dp))
+                if (!revealed) InkButton("Show answer", small = true, on = true) { revealed = true }
+                else {
+                    T(c.a, size = 17.sp)
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        InkButton("Missed it", small = true) { run.answer(false); revealed = false; tick++ }
+                        InkButton("Got it", small = true, on = true) { run.answer(true); revealed = false; tick++ }
+                    }
+                }
+            } else {
+                val q = quiz[cur]
+                T(q.q, bold = true, size = 19.sp)
+                Spacer(Modifier.height(10.dp))
+                q.options.forEachIndexed { i, o ->
+                    val mark = if (picked == null) "" else if (i == q.answer) "✓ " else if (i == picked) "✗ " else ""
+                    Box(Modifier.padding(vertical = 3.dp)) { InkButton(mark + o, small = true, on = picked == i, enabled = picked == null) { picked = i } }
+                }
+                picked?.let { pk ->
+                    Spacer(Modifier.height(8.dp))
+                    if (q.why.isNotBlank()) T(q.why, size = 14.sp, italic = true, color = Ink.Gray)
+                    Spacer(Modifier.height(10.dp))
+                    InkButton("Next ›", small = true, on = true) { run.answer(pk == q.answer); picked = null; tick++ }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            InkButton("Stop", small = true, onClick = onClose)
         }
     }
 }

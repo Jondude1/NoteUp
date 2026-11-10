@@ -195,6 +195,28 @@ object Store {
         return first
     }
 
+
+    /** Puts generated drawings (mind map, table) on new pages after the last page: boxes as ink outlines, text as typed text. Returns the first page index. */
+    fun addDrawingPages(nbId: String, title: String, drawings: List<com.jondude.noteup.ai.Drawing>): Int {
+        var first = -1
+        drawings.forEachIndexed { n, d ->
+            val nb = notebook(nbId) ?: return first
+            val p = addPage(nbId, nb.pageIds.lastIndex)
+            fun stroke(pts: FloatArray) = Stroke(pts = pts, times = LongArray(pts.size / 3) { it * 8L }, t0 = System.currentTimeMillis(), width = 2.2f)
+            val strokes = ArrayList<Stroke>()
+            val texts = ArrayList<PageText>()
+            texts.add(PageText(x = 40f, y = 24f, w = 920f, text = if (n == 0) title else "$title (cont.)", size = 26f, centered = false))
+            for (b in d.boxes) {
+                if (b.bordered) strokes.add(stroke(floatArrayOf(b.x, b.y, 1f, b.x + b.w, b.y, 1f, b.x + b.w, b.y + b.h, 1f, b.x, b.y + b.h, 1f, b.x, b.y, 1f)))
+                if (b.text.isNotBlank()) texts.add(PageText(x = b.x + 6f, y = b.y + 6f, w = (b.w - 12f).coerceAtLeast(20f), text = b.text, size = b.size, centered = b.centered))
+            }
+            for (l in d.lines) strokes.add(stroke(floatArrayOf(l.x1, l.y1, 1f, l.x2, l.y2, 1f)))
+            savePage(p.copy(strokes = strokes, texts = texts, title = if (n == 0) title else null))
+            if (first < 0) first = notebook(nbId)!!.pageIds.indexOf(p.id)
+        }
+        return first
+    }
+
     private fun removePageFiles(pid: String) {
         val p = pageCache.remove(pid) ?: read<Page>("pages/$pid.json")
         p?.background?.let { File(bgDir, it).delete() }

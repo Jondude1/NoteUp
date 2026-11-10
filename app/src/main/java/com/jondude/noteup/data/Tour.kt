@@ -21,6 +21,8 @@ object Tour {
         Step(11, "Reports", "Make a briefing, study guide, blog post or your own custom report from a notebook. Save any result as pages.", "Studio → Make"),
         Step(12, "Read aloud", "Have meeting notes read to you.", "Meeting tab → Read aloud"),
         Step(13, "Updates", "NoteUp checks for new versions itself. When one is ready, tap the banner to install.", "Banner at the top of Home; Settings → Updates"),
+        Step(15, "Flashcards and quizzes", "Make flashcards or a multiple-choice quiz from everything in a notebook, at easy, medium or hard. Study mode brings missed ones back until you get them, then shows what to review.", "Studio → Make → Study and visuals"),
+        Step(15, "Mind map and data table", "Turn a notebook into a mind map or a data table. Put either on real pages as ink boxes and lines, and copy or share tables as CSV.", "Studio → Make → Mind map / Data table"),
         Step(14, "This walkthrough", "Open it any time from the Tour button. It's optional, and it gains a step whenever a new feature is added.", "Home → Tour"),
     )
 

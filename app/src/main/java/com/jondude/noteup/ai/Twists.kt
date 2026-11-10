@@ -206,6 +206,38 @@ Read this $what and reply with JSON only:
 ${text.take(if (what == "notebook") 60_000 else 10_000)}
 """.trimIndent()
 
+
+    private fun level(d: String) = when (d) { "easy" -> "easy: basic recall of key facts"; "hard" -> "hard: needs understanding, comparison or applying ideas"; else -> "medium: a mix of recall and understanding" }
+
+    /** Study material as JSON. Uses only the excerpts. */
+    fun cardsJson(excerpts: String, n: Int, difficulty: String) = """
+Make $n flashcards from the excerpts below, difficulty $difficulty (${level(difficulty)}). Use only facts in the excerpts. Each card is one question and a short answer.
+Reply with JSON only: {"cards":[{"q":"...","a":"..."}]}
+
+$excerpts
+""".trimIndent()
+
+    fun quizJson(excerpts: String, n: Int, difficulty: String) = """
+Write a multiple-choice quiz of $n questions from the excerpts below, difficulty $difficulty (${level(difficulty)}). Use only facts in the excerpts. Each question has 4 distinct options, exactly one correct; "answer" is the 0-based index of the correct option; "why" is one short sentence.
+Reply with JSON only: {"questions":[{"q":"...","options":["...","...","...","..."],"answer":0,"why":"..."}]}
+
+$excerpts
+""".trimIndent()
+
+    fun mapJson(excerpts: String) = """
+Make a mind map of the main ideas in the excerpts below. Root = the subject (max 6 words). 4-7 branches, each with 2-4 short sub-points (max 8 words each); at most 3 levels deep.
+Reply with JSON only: {"text":"root","kids":[{"text":"branch","kids":[{"text":"point"}]}]}
+
+$excerpts
+""".trimIndent()
+
+    fun tableJson(excerpts: String, ask: String) = """
+Pull a data table from the excerpts below${if (ask.isBlank()) ": compare the main items, people, options or facts that recur" else ": $ask"}. 2-6 columns, up to 25 rows, short cell text, only facts found in the excerpts (leave a cell empty if unknown).
+Reply with JSON only: {"columns":["..."],"rows":[["...","..."]]}
+
+$excerpts
+""".trimIndent()
+
     /** Reports made from the notebook. [kind]: briefing, study, blog or custom. */
     fun report(kind: String, excerpts: String, custom: String = "") = """
 ${when (kind) {
