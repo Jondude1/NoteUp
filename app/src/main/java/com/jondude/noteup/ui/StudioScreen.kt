@@ -97,8 +97,8 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
         busy = "Reading your notebook…"; error = null
         scope.launch {
             try {
-                val chunks = withContext(Dispatchers.Default) { Corpus.build(if (everything) null else nbId, q) }
-                val history = Store.studioOf(nbId).filter { it.kind == "chat" }.takeLast(3).map { it.title to it.body }
+                val chunks = withContext(Dispatchers.Default) { Corpus.build(if (everything) null else nbId, q, 45_000) }
+                val history = Store.studioOf(nbId).filter { it.kind == "chat" }.takeLast(2).map { it.title to it.body.take(500) }
                 busy = "Thinking…"
                 val ans = AiClient.ask(Twists.SYSTEM, Twists.askCited(q, Corpus.prompt(chunks), history), null, 1500)
                 val refs = Cites.numbers(ans).mapNotNull { n -> chunks.firstOrNull { it.ref.n == n }?.ref }
@@ -120,7 +120,7 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
 
     suspend fun guideFor(s: Source) {
         if (!AiClient.configured(Settings.backend)) return
-        val g = parseGuide(AiClient.ask(Twists.SYSTEM, Twists.guide("source", s.text), null, 700)) ?: return
+        val g = parseGuide(AiClient.ask(Twists.SYSTEM, Twists.guide("source", s.text), null, 450, light = true)) ?: return
         Store.upsertSource((Store.sources.firstOrNull { it.id == s.id } ?: s).copy(summary = g.first, topics = g.second, questions = g.third))
     }
 
@@ -135,7 +135,7 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
         busy = "Writing $title…"; error = null
         scope.launch {
             try {
-                val chunks = withContext(Dispatchers.Default) { Corpus.build(nbId) }
+                val chunks = withContext(Dispatchers.Default) { Corpus.build(nbId, custom.ifBlank { null }, 70_000) }
                 if (chunks.isEmpty()) throw IllegalStateException("There's nothing in this notebook to work from yet.")
                 val text = AiClient.ask(Twists.SYSTEM, Twists.report(kind, Corpus.prompt(chunks), custom), null, 3500)
                 val refs = Cites.numbers(text).mapNotNull { n -> chunks.firstOrNull { it.ref.n == n }?.ref }
@@ -150,9 +150,9 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
         busy = "Reading the whole notebook…"; error = null
         scope.launch {
             try {
-                val chunks = withContext(Dispatchers.Default) { Corpus.build(nbId) }
+                val chunks = withContext(Dispatchers.Default) { Corpus.build(nbId, null, 60_000) }
                 if (chunks.isEmpty()) throw IllegalStateException("There's nothing in this notebook to summarise yet.")
-                val g = parseGuide(AiClient.ask(Twists.SYSTEM, Twists.guide("notebook", Corpus.prompt(chunks)), null, 700))
+                val g = parseGuide(AiClient.ask(Twists.SYSTEM, Twists.guide("notebook", Corpus.prompt(chunks)), null, 500))
                     ?: throw IllegalStateException("The AI didn't return an overview. Try again.")
                 val body = kotlinx.serialization.json.buildJsonObject {
                     put("summary", g.first)

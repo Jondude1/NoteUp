@@ -533,7 +533,7 @@ private fun AskTab() {
         Store.tasks.filter { !it.done }.takeIf { it.isNotEmpty() }?.let { open ->
             append("### Open tasks\n${open.joinToString("\n") { "- ${it.text}" }}\n")
         }
-    }.takeLast(120_000)
+    }.takeLast(50_000)
 
     Column(Modifier.fillMaxSize()) {
         Header("Ask your notes")
@@ -653,7 +653,7 @@ private fun SettingsTab() {
                     test = "Testing…"
                     scope.launch {
                         test = try {
-                            val r = AiClient.ask("Reply with exactly: ok", "ping", null, 10)
+                            val r = AiClient.ask("Reply with exactly: ok", "ping", null, 10, light = true)
                             "Working — ${if (AiClient.lastBackend == com.jondude.noteup.data.AiBackend.CLAUDE) "Claude" else "local server"} replied \"${r.take(30)}\""
                         } catch (e: Exception) { "Failed: ${e.message}" }
                     }

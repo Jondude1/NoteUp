@@ -203,7 +203,7 @@ QUESTION: $question
 Read this $what and reply with JSON only:
 {"summary":"2-3 plain sentences saying what it is and what matters","topics":["up to 6 short topic names"],"questions":["3 good questions someone could ask about it"]}
 
-${text.take(if (what == "notebook") 120_000 else 30_000)}
+${text.take(if (what == "notebook") 60_000 else 10_000)}
 """.trimIndent()
 
     /** Reports made from the notebook. [kind]: briefing, study, blog or custom. */

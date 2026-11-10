@@ -63,7 +63,7 @@ object Indexer {
                 (updated.title == null || updated.tags.isEmpty())
             if (wantTags) {
                 try {
-                    val reply = AiClient.ask(Twists.SYSTEM, Twists.titleTags(text), null, 200)
+                    val reply = AiClient.ask(Twists.SYSTEM, Twists.titleTags(text), null, 120, light = true)
                     Twists.jsonObject(reply)?.let { j ->
                         val o = Store.json.parseToJsonElement(j).jsonObject
                         val title = o["title"]?.jsonPrimitive?.content?.trim()?.take(60)

@@ -35,7 +35,7 @@ object Discoverer {
         return try {
             val reply = AiClient.ask("You write web search queries. Reply only with JSON.",
                 "Write 6 varied web search queries that together cover this subject from different angles (basics, recent developments, data and statistics, expert analysis, criticism, practical guides). " +
-                    "Reply as {\"queries\":[\"...\"]}.\n\nSubject: $topic", null, 400)
+                    "Reply as {\"queries\":[\"...\"]}.\n\nSubject: $topic", null, 250, light = true)
             val arr = Store.json.parseToJsonElement(Twists.jsonObject(reply) ?: return listOf(topic)).jsonObject["queries"]?.jsonArray
             (arr?.map { it.jsonPrimitive.content }.orEmpty().filter { it.isNotBlank() } + topic).distinct()
         } catch (e: Exception) { listOf(topic) }
@@ -48,7 +48,7 @@ object Discoverer {
         progress("Searching the web…")
         var candidates: List<Discover.Candidate> = emptyList()
         if (Settings.backend == AiBackend.CLAUDE && AiClient.configured(AiBackend.CLAUDE)) {
-            try { candidates = AiClient.searchClaude(topic, 10) } catch (e: Exception) { /* fall back below */ }
+            try { candidates = AiClient.searchClaude(topic, count / 3 + 2) } catch (e: Exception) { /* fall back below */ }
         }
         if (candidates.size < count) {
             val qs = queries(topic)

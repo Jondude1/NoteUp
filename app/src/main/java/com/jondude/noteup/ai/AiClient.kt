@@ -60,12 +60,17 @@ object AiClient {
     /** Which backend actually answered the last call — shown in the UI. */
     @Volatile var lastBackend: AiBackend = AiBackend.CLAUDE
 
-    suspend fun ask(system: String, prompt: String, imagePngBase64: String? = null, maxTokens: Int = 2000): String =
+    /** Small, cheap model for simple jobs (titles, guides, search queries). Falls back to the main model if it's unavailable. */
+    const val LIGHT_MODEL = "claude-haiku-5-5"
+
+    suspend fun ask(system: String, prompt: String, imagePngBase64: String? = null, maxTokens: Int = 2000, light: Boolean = false): String =
         withContext(Dispatchers.IO) {
             val first = Settings.backend
             val other = if (first == AiBackend.CLAUDE) AiBackend.LOCAL else AiBackend.CLAUDE
             try {
-                call(first, system, prompt, imagePngBase64, maxTokens).also { lastBackend = first }
+                if (light && first == AiBackend.CLAUDE) {
+                    try { claude(system, prompt, imagePngBase64, maxTokens, LIGHT_MODEL) } catch (e: Exception) { claude(system, prompt, imagePngBase64, maxTokens) }.also { lastBackend = first }
+                } else call(first, system, prompt, imagePngBase64, maxTokens).also { lastBackend = first }
             } catch (e: Exception) {
                 if (Settings.fallbackToOther && configured(other)) {
                     call(other, system, prompt, imagePngBase64, maxTokens).also { lastBackend = other }
@@ -83,10 +88,10 @@ object AiClient {
         AiBackend.LOCAL -> openAiCompatible(system, prompt, img, maxTokens)
     }
 
-    private fun claude(system: String, prompt: String, img: String?, maxTokens: Int): String {
+    private fun claude(system: String, prompt: String, img: String?, maxTokens: Int, model: String = Settings.claudeModel): String {
         if (Settings.claudeKey.isBlank()) throw AiException("Add your Claude API key in Settings.")
         val body = buildJsonObject {
-            put("model", Settings.claudeModel)
+            put("model", model)
             put("max_tokens", maxTokens)
             put("system", system)
             putJsonArray("messages") {
@@ -131,7 +136,7 @@ object AiClient {
         if (Settings.claudeKey.isBlank()) throw AiException("Add your Claude API key in Settings.")
         val body = buildJsonObject {
             put("model", Settings.claudeModel)
-            put("max_tokens", 1500)
+            put("max_tokens", 500)
             put("system", "You are a research assistant. Use web search several times with different angles (background, recent developments, data, expert analysis, opposing views). Prefer reputable, readable pages over PDFs and paywalls. Reply with one short line when done.")
             putJsonArray("tools") {
                 add(buildJsonObject { put("type", "web_search_20250305"); put("name", "web_search"); put("max_uses", searches) })
