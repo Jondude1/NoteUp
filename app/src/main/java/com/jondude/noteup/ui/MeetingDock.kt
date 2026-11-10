@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import com.jondude.noteup.ai.NoteStyle
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.heightIn
@@ -85,6 +87,7 @@ private fun NotesTab(rec: Recording, live: Boolean, job: String?) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
         T(rec.title, bold = true, size = 17.sp)
+        rec.summaryStyle?.let { T(NoteStyle.from(it).label + " notes", size = 13.sp, sans = true, color = Ink.Gray) }
         Spacer(Modifier.height(8.dp))
         when {
             live -> T("Notes are written automatically when you stop recording.", italic = true, color = Ink.Gray)
@@ -94,7 +97,14 @@ private fun NotesTab(rec: Recording, live: Boolean, job: String?) {
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     InkButton("Copy", small = true) { copyText(ctx, rec.summary) }
-                    InkButton("Rewrite", small = true) { AutoMinutes.redo(ctx, rec.id) }
+                    InkButton("Rewrite", small = true) { AutoMinutes.redo(ctx, rec.id, NoteStyle.from(rec.summaryStyle)) }
+                }
+                Spacer(Modifier.height(14.dp))
+                SectionLabel("Rewrite as")
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    NoteStyle.entries.forEach { st ->
+                        InkButton(st.label, on = rec.summaryStyle == st.name, small = true) { AutoMinutes.redo(ctx, rec.id, st) }
+                    }
                 }
             }
             else -> {

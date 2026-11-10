@@ -77,8 +77,8 @@ fun RecordingScreen(id: String, onBack: () -> Unit, onOpenNotebook: (nbId: Strin
                     val strokes = nb.pageIds.flatMap { pid -> Store.page(pid, nbId).strokes.filter { it.recId == rec.id } }
                     try { HandwritingRecognizer.recognize(strokes, Settings.language) } catch (e: Exception) { "" }
                 }.orEmpty()
-                val out = AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, notes), null, 1800)
-                Store.upsertRecording(rec.copy(summary = out))
+                val out = AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, notes, Settings.noteStyle), null, 1800)
+                Store.upsertRecording(rec.copy(summary = out, summaryStyle = Settings.noteStyle.name))
                 Store.addTasksWithDue(Twists.parseActionsWithDue(out), rec.title)
             } catch (e: Exception) { error = e.message }
             busy = null

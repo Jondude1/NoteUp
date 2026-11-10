@@ -41,6 +41,9 @@ object Settings {
     /** When a recording stops, the AI writes the meeting minutes and adds action items to Tasks. */
     var autoMinutes by mutableStateOf(true)
 
+    /** Shape of the AI's meeting notes. */
+    var noteStyle by mutableStateOf(com.jondude.noteup.ai.NoteStyle.GENERAL)
+
     // sync (WebDAV: Nextcloud, ownCloud, any WebDAV server)
     var syncUrl by mutableStateOf("")
     var syncUser by mutableStateOf("")
@@ -72,6 +75,7 @@ object Settings {
         scribbleErase = prefs.getBoolean("scribbleErase", true)
         autoTag = prefs.getBoolean("autoTag", true)
         autoMinutes = prefs.getBoolean("autoMinutes", true)
+        noteStyle = com.jondude.noteup.ai.NoteStyle.from(prefs.getString("noteStyle", null))
         syncUrl = prefs.getString("syncUrl", "") ?: ""
         syncUser = prefs.getString("syncUser", "") ?: ""
         syncPass = prefs.getString("syncPass", "") ?: ""
@@ -101,6 +105,7 @@ object Settings {
             .putBoolean("scribbleErase", scribbleErase)
             .putBoolean("autoTag", autoTag)
             .putBoolean("autoMinutes", autoMinutes)
+            .putString("noteStyle", noteStyle.name)
             .putString("syncUrl", syncUrl.trim())
             .putString("syncUser", syncUser.trim())
             .putString("syncPass", syncPass)

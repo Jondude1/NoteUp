@@ -143,6 +143,8 @@ data class Recording(
     val pageId: String? = null,
     val segments: List<Segment> = emptyList(),
     val summary: String? = null,
+    /** NoteStyle name the summary was written in. */
+    val summaryStyle: String? = null,
     val updatedAt: Long = 0,
 )
 

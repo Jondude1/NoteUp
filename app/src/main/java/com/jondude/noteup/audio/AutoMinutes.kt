@@ -13,6 +13,7 @@ import android.os.Looper
 import android.widget.Toast
 import com.jondude.noteup.MainActivity
 import com.jondude.noteup.ai.AiClient
+import com.jondude.noteup.ai.NoteStyle
 import com.jondude.noteup.ai.Twists
 import com.jondude.noteup.data.Settings
 import com.jondude.noteup.data.Store
@@ -43,18 +44,18 @@ object AutoMinutes {
             try {
                 // the last spoken sentence arrives a moment after Stop; Whisper chunks can take longer
                 delay(if (whisper) 12_000L else 4_000L)
-                run(ctx.applicationContext, recId, force = false)
+                run(ctx.applicationContext, recId, force = false, style = Settings.noteStyle)
             } catch (_: Exception) {
             } finally { working.remove(recId) }
         }
     }
 
     /** From the meeting tab: fix the wording and write the notes again, even if notes already exist. */
-    fun redo(ctx: Context, recId: String) {
+    fun redo(ctx: Context, recId: String, style: NoteStyle = Settings.noteStyle) {
         if (working.containsKey(recId)) return
         working[recId] = "Working…"
         scope.launch {
-            try { run(ctx.applicationContext, recId, force = true) } catch (_: Exception) {} finally { working.remove(recId) }
+            try { run(ctx.applicationContext, recId, force = true, style = style) } catch (_: Exception) {} finally { working.remove(recId) }
         }
     }
 
@@ -97,7 +98,7 @@ object AutoMinutes {
         Store.upsertRecording(latest.copy(segments = merged))
     }
 
-    private suspend fun run(ctx: Context, recId: String, force: Boolean) {
+    private suspend fun run(ctx: Context, recId: String, force: Boolean, style: NoteStyle) {
         var rec = Store.recording(recId) ?: return
         if (!force && rec.summary != null) return
         if (!AiClient.configured(Settings.backend)) {
@@ -119,14 +120,14 @@ object AutoMinutes {
         working[recId] = "Writing the meeting notes…"
         val transcript = rec.segments.joinToString("\n") { "[${fmtTime(it.startMs)}] ${it.text}" }
         val out = try {
-            AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, notes), null, 1800)
+            AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, notes, style), null, 1800)
         } catch (e: Exception) {
             toast(ctx, "Couldn't write meeting notes: ${e.message}")
             return
         }
         val latest = Store.recording(recId) ?: return
         if (!force && latest.summary != null) return // you ran Minutes yourself in the meantime
-        Store.upsertRecording(latest.copy(summary = out))
+        Store.upsertRecording(latest.copy(summary = out, summaryStyle = style.name))
         Store.addTasksWithDue(Twists.parseActionsWithDue(out), rec.title)
         toast(ctx, "Meeting notes ready: ${rec.title}")
         notify(ctx, rec.title)

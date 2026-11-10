@@ -351,9 +351,9 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
         runClaude("Meeting minutes", work = {
             val transcript = recs.joinToString("\n") { r -> r.segments.joinToString("\n") { "[${fmtTime(it.startMs)}] ${it.text}" } }
             val hand = try { HandwritingRecognizer.recognize(strokes, Settings.language) } catch (e: Exception) { "" }
-            AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, hand), null, 1800)
+            AiClient.ask(Twists.SYSTEM, Twists.minutes(transcript, hand, Settings.noteStyle), null, 1800)
         }, then = { out ->
-            recs.singleOrNull()?.let { Store.upsertRecording(it.copy(summary = out)) }
+            recs.singleOrNull()?.let { Store.upsertRecording(it.copy(summary = out, summaryStyle = Settings.noteStyle.name)) }
             val actions = Twists.parseActionsWithDue(out)
             Store.addTasksWithDue(actions, source)
             if (actions.isNotEmpty()) "(${actions.size} action item${if (actions.size == 1) "" else "s"} added to Tasks.)" else null

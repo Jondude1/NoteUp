@@ -8,26 +8,16 @@ You read the user's handwriting and meeting transcripts. Be brief and concrete: 
 shown on an e-ink style page, so use plain text, short lines, simple "-" bullets, no markdown headers,
 no bold, no emoji."""
 
-    /** Meeting minutes from transcript + handwritten notes. Ends with a parsable ACTIONS block. */
-    fun minutes(transcript: String, handwriting: String) = """
-Write meeting minutes from the material below.
+    /** Meeting minutes from transcript + handwritten notes, in the chosen [style]. Ends with a parsable ACTIONS block. */
+    fun minutes(transcript: String, handwriting: String, style: NoteStyle = NoteStyle.GENERAL, marks: String = "") = """
+Write meeting notes from the material below (style: ${style.label}).
 
 Format exactly:
-SUMMARY
-(3-5 sentences)
-
-KEY POINTS
-- ...
-
-DECISIONS
-- ... (or "- none")
-
-ACTIONS
-- [owner if known] task [due: YYYY-MM-DD]   ← add the [due: ...] part only when a date or day is mentioned
+${style.format}
 
 Today is ${java.text.SimpleDateFormat("EEEE yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())}; turn "Friday", "next week" etc. into dates.
 
-Use the handwritten notes to see what the note-taker thought mattered most; weight those topics.
+Use the handwritten notes to see what the note-taker thought mattered most; weight those topics.${if (marks.isNotBlank()) "\nThe note-taker starred these moments as important, so make sure they are covered:\n$marks" else ""}
 
 TRANSCRIPT:
 ${transcript.ifBlank { "(no recording)" }}

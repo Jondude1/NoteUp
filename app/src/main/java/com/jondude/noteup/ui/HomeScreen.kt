@@ -691,6 +691,15 @@ private fun SettingsTab() {
                 note = "Scratch back and forth over ink with the pen to wipe it out")
             Toggle("Auto meeting notes", Settings.autoMinutes, { v -> s { Settings.autoMinutes = v } },
                 note = "When a recording stops, the AI writes the meeting minutes and adds action items to Tasks (uses your AI setting)")
+            SectionLabel("Meeting note style")
+            com.jondude.noteup.ai.NoteStyle.entries.chunked(3).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                    row.forEach { st ->
+                        InkButton(st.label, on = Settings.noteStyle == st, small = true) { s { Settings.noteStyle = st } }
+                    }
+                }
+            }
+            T(Settings.noteStyle.hint, size = 13.sp, italic = true, color = Ink.Gray, modifier = Modifier.padding(bottom = 10.dp))
             Toggle("Auto titles and tags", Settings.autoTag, { v -> s { Settings.autoTag = v } },
                 note = "After a page is read, the AI names it and tags its topics (uses your AI setting)")
             SectionLabel("Default paper")
