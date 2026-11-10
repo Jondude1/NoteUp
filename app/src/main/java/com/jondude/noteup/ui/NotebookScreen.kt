@@ -149,7 +149,7 @@ fun copyText(ctx: Context, text: String) {
 }
 
 @Composable
-fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecording: (String) -> Unit) {
+fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecording: (String) -> Unit, onOpenStudio: (String) -> Unit = {}) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val nb = Store.notebooks.firstOrNull { it.id == nbId }
@@ -527,6 +527,7 @@ fun NotebookScreen(nbId: String, startPage: Int, onBack: () -> Unit, onOpenRecor
             }
             if (Recorder.active != null) ToolItem("★ ${Recorder.marks.size}") { Recorder.mark() }
             ToolItem("Meeting", on = dock >= 0) { dock = if (dock >= 0) -1 else 0 }
+            ToolItem("Studio") { ed.flush(); onOpenStudio(nb.id) }
             ToolItem("✦ Claude", on = panel.kind == PanelKind.CLAUDE) {
                 panel = if (panel.kind == PanelKind.CLAUDE) Panel() else Panel(PanelKind.CLAUDE, "Claude")
             }

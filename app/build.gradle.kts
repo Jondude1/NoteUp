@@ -64,5 +64,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 
     implementation("com.google.mlkit:digital-ink-recognition:18.1.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

@@ -30,6 +30,8 @@ object Store {
     val notebooks = mutableStateListOf<Notebook>()
     val recordings = mutableStateListOf<Recording>()
     val tasks = mutableStateListOf<TaskItem>()
+    val sources = mutableStateListOf<Source>()
+    val studio = mutableStateListOf<StudioItem>()
 
     /** id -> time deleted, so a delete on one tablet wins over the copy on the other. */
     val tombstones = HashMap<String, Long>()
@@ -58,10 +60,12 @@ object Store {
 
     /** Re-reads the list files from disk (after sync). */
     fun reloadLists() {
-        notebooks.clear(); recordings.clear(); tasks.clear()
+        notebooks.clear(); recordings.clear(); tasks.clear(); sources.clear(); studio.clear()
         notebooks.addAll(read<List<Notebook>>("notebooks.json") ?: emptyList())
         recordings.addAll(read<List<Recording>>("recordings.json") ?: emptyList())
         tasks.addAll(read<List<TaskItem>>("tasks.json") ?: emptyList())
+        sources.addAll(read<List<Source>>("sources.json") ?: emptyList())
+        studio.addAll(read<List<StudioItem>>("studio.json") ?: emptyList())
         tombstones.clear(); tombstones.putAll(read<Map<String, Long>>("tombstones.json") ?: emptyMap())
         pageStamps.clear(); pageStamps.putAll(read<Map<String, Long>>("page-stamps.json") ?: emptyMap())
         pageCache.clear()
@@ -90,6 +94,8 @@ object Store {
 
     private fun saveNotebooks() = writeAsync("notebooks.json", json.encodeToString(notebooks.toList()))
     private fun saveRecordings() = writeAsync("recordings.json", json.encodeToString(recordings.toList()))
+    private fun saveSources() = writeAsync("sources.json", json.encodeToString(sources.toList()))
+    private fun saveStudio() = writeAsync("studio.json", json.encodeToString(studio.toList()))
     private fun saveTasks() = writeAsync("tasks.json", json.encodeToString(tasks.toList()))
     private fun saveTombstones() = writeAsync("tombstones.json", json.encodeToString(tombstones.toMap()))
     private fun savePageStamps() = writeAsync("page-stamps.json", json.encodeToString(pageStamps.toMap()))
@@ -124,6 +130,48 @@ object Store {
         notebooks.removeAll { it.id == id }
         bury(id)
         saveNotebooks()
+        sources.filter { it.notebookId == id }.forEach { bury(it.id) }
+        studio.filter { it.notebookId == id }.forEach { bury(it.id) }
+        sources.removeAll { it.notebookId == id }; saveSources()
+        studio.removeAll { it.notebookId == id }; saveStudio()
+    }
+
+    // ---- sources and studio items ----
+    fun sourcesOf(nbId: String): List<Source> = sources.filter { it.notebookId == nbId }.sortedBy { it.addedAt }
+    fun studioOf(nbId: String): List<StudioItem> = studio.filter { it.notebookId == nbId }.sortedBy { it.createdAt }
+
+    fun upsertSource(s: Source) {
+        val stamped = s.copy(updatedAt = System.currentTimeMillis())
+        val i = sources.indexOfFirst { it.id == s.id }
+        if (i >= 0) sources[i] = stamped else sources.add(stamped)
+        saveSources()
+    }
+
+    fun deleteSource(id: String) { sources.removeAll { it.id == id }; bury(id); saveSources() }
+
+    fun upsertStudio(item: StudioItem) {
+        val stamped = item.copy(updatedAt = System.currentTimeMillis())
+        val i = studio.indexOfFirst { it.id == item.id }
+        if (i >= 0) studio[i] = stamped else studio.add(stamped)
+        saveStudio()
+    }
+
+    fun deleteStudio(id: String) { studio.removeAll { it.id == id }; bury(id); saveStudio() }
+
+    /** Saves text onto new typed pages at the end of the notebook (or under [parentId]). Returns the index of the first new page. */
+    fun addTextPages(nbId: String, title: String, body: String, parentId: String? = null): Int {
+        val chunks = com.jondude.noteup.ai.Splitter.split(body, 2600).ifEmpty { listOf("") }
+        var first = -1
+        chunks.forEachIndexed { i, chunk ->
+            val nb = notebook(nbId) ?: return first
+            val p = if (parentId != null && i == 0) addSubpage(nbId, parentId) else addPage(nbId, notebook(nbId)!!.pageIds.lastIndex)
+            val texts = ArrayList<PageText>()
+            texts.add(PageText(x = 60f, y = 60f, w = 880f, text = if (i == 0) title else "$title (cont.)", size = 28f, centered = false))
+            texts.add(PageText(x = 60f, y = 130f, w = 880f, text = chunk, size = 20f, centered = false))
+            savePage(p.copy(texts = texts, title = if (i == 0) title else null))
+            if (first < 0) first = notebook(nbId)!!.pageIds.indexOf(p.id)
+        }
+        return first
     }
 
     private fun removePageFiles(pid: String) {

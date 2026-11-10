@@ -24,6 +24,7 @@ import com.jondude.noteup.ui.HomeScreen
 import com.jondude.noteup.ui.InkTheme
 import com.jondude.noteup.ui.NotebookScreen
 import com.jondude.noteup.ui.RecordingScreen
+import com.jondude.noteup.ui.StudioScreen
 import com.jondude.noteup.ui.Tab
 
 class MainActivity : ComponentActivity() {
@@ -74,8 +75,18 @@ private fun App() {
                     startPage = parts.getOrNull(2)?.toIntOrNull() ?: 0,
                     onBack = { home() },
                     onOpenRecording = { route = "rec:$it" },
+                    onOpenStudio = { route = "studio:$it" },
                 )
             }
+        }
+        "studio" -> {
+            BackHandler { route = "nb:${parts[1]}:0" }
+            StudioScreen(
+                nbId = parts[1],
+                onBack = { route = "nb:${parts[1]}:0" },
+                onOpenPage = { id, idx -> route = "nb:$id:$idx" },
+                onOpenRecording = { route = "rec:$it" },
+            )
         }
         "rec" -> {
             BackHandler { home() }

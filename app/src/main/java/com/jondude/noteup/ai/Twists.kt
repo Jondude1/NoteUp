@@ -185,4 +185,38 @@ Reply with JSON only: {"lines":[{"i":0,"text":"corrected line"}, ...]} with one 
 LINES:
 $numbered
 """.trimIndent()
+
+    /** A question answered only from numbered excerpts, with [n] citations. */
+    fun askCited(question: String, excerpts: String, history: List<Pair<String, String>>) = """
+Answer the question using ONLY the numbered excerpts below, which come from the user's own notebook.
+After each fact or claim, put the number of the excerpt it came from in square brackets, like [2] or [2, 5]. Never make up a number.
+If the excerpts don't cover the question, say so plainly and say what is missing. Be brief and concrete.
+
+EXCERPTS:
+${excerpts.ifBlank { "(nothing in the notebook yet)" }}
+${if (history.isNotEmpty()) "\nEARLIER IN THIS CONVERSATION:\n" + history.joinToString("\n") { "Q: ${it.first}\nA: ${it.second.take(600)}" } + "\n" else ""}
+QUESTION: $question
+""".trimIndent()
+
+    /** Source guide: a summary, the main topics and questions worth asking, as JSON. */
+    fun guide(what: String, text: String) = """
+Read this $what and reply with JSON only:
+{"summary":"2-3 plain sentences saying what it is and what matters","topics":["up to 6 short topic names"],"questions":["3 good questions someone could ask about it"]}
+
+${text.take(30_000)}
+""".trimIndent()
+
+    /** Reports made from the notebook. [kind]: briefing, study, blog or custom. */
+    fun report(kind: String, excerpts: String, custom: String = "") = """
+${when (kind) {
+    "briefing" -> "Write a briefing document from the excerpts. Sections, in this order: OVERVIEW (a short paragraph), KEY FINDINGS (numbered), IMPORTANT DETAILS, OPEN QUESTIONS, SUGGESTED NEXT STEPS."
+    "study" -> "Write a study guide from the excerpts. Sections, in this order: KEY CONCEPTS (each explained in a sentence or two), GLOSSARY, SHORT-ANSWER QUESTIONS (numbered, no answers), ANSWER KEY, ESSAY PROMPTS (2)."
+    "blog" -> "Write a blog post of 500-700 words from the excerpts: a title line, a short hook, three or four sections each with a plain heading line, and a closing paragraph."
+    else -> "Follow this instruction using the excerpts: $custom"
+}}
+Cite the excerpt behind each fact with its number in square brackets like [2]. Use plain text only (no markdown symbols, no bold); headings in capitals; "-" bullets. Use only what the excerpts say.
+
+EXCERPTS:
+$excerpts
+""".trimIndent()
 }

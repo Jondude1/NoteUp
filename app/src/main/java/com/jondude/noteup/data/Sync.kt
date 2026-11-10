@@ -143,6 +143,12 @@ object Sync {
             .sortedByDescending { it.createdAt }
         val tasks = merge(local.tasks, remote("tasks.json", emptyList()), { it.id }, { maxOf(it.updatedAt, it.createdAt) }, dead)
             .sortedByDescending { it.createdAt }
+        val localSources = Store.read<List<Source>>("sources.json") ?: emptyList()
+        val localStudio = Store.read<List<StudioItem>>("studio.json") ?: emptyList()
+        val sources = merge(localSources, remote("sources.json", emptyList()), { it.id }, { it.updatedAt }, dead)
+            .filter { s -> notebooks.any { it.id == s.notebookId } }.sortedBy { it.addedAt }
+        val studio = merge(localStudio, remote("studio.json", emptyList()), { it.id }, { it.updatedAt }, dead)
+            .filter { s -> notebooks.any { it.id == s.notebookId } }.sortedBy { it.createdAt }
         val rStamps = remote<Map<String, Long>>("page-stamps.json", emptyMap())
 
         var up = 0
@@ -197,13 +203,16 @@ object Sync {
             "notebooks.json" to enc.encodeToString(notebooks),
             "recordings.json" to enc.encodeToString(recordings),
             "tasks.json" to enc.encodeToString(tasks),
+            "sources.json" to enc.encodeToString(sources),
+            "studio.json" to enc.encodeToString(studio),
             "tombstones.json" to enc.encodeToString(dead.toMap()),
             "page-stamps.json" to enc.encodeToString(stamps.toMap()),
         )
         synchronized(Store) { lists.forEach { (name, text) -> Store.writeNow(name, text) } }
         lists.forEach { (name, text) -> put(name, text.encodeToByteArray()) }
 
-        val changedLocally = down > 0 || notebooks != local.notebooks || recordings != local.recordings || tasks != local.tasks
+        val changedLocally = down > 0 || notebooks != local.notebooks || recordings != local.recordings || tasks != local.tasks ||
+            sources != localSources.sortedBy { it.addedAt } || studio != localStudio.sortedBy { it.createdAt }
         if (changedLocally) kotlinx.coroutines.runBlocking(Dispatchers.Main) { Store.reloadLists() }
 
         val time = SimpleDateFormat("h:mm a", Locale.US).format(Date())
