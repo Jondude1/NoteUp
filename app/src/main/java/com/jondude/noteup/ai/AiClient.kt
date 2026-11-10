@@ -103,6 +103,46 @@ object AiClient {
         }
     }
 
+
+    /**
+     * Asks Claude to search the web (its built-in server-side search) and returns the pages it found.
+     * Needs web search enabled for the account in the Anthropic console; throws if it isn't.
+     */
+    suspend fun searchClaude(topic: String, searches: Int): List<Discover.Candidate> = withContext(Dispatchers.IO) {
+        if (Settings.claudeKey.isBlank()) throw AiException("Add your Claude API key in Settings.")
+        val body = buildJsonObject {
+            put("model", Settings.claudeModel)
+            put("max_tokens", 1500)
+            put("system", "You are a research assistant. Use web search several times with different angles (background, recent developments, data, expert analysis, opposing views). Prefer reputable, readable pages over PDFs and paywalls. Reply with one short line when done.")
+            putJsonArray("tools") {
+                add(buildJsonObject { put("type", "web_search_20250305"); put("name", "web_search"); put("max_uses", searches) })
+            }
+            putJsonArray("messages") {
+                add(buildJsonObject { put("role", "user"); put("content", "Find many varied, high-quality web sources that would strengthen research on this subject:\n$topic") })
+            }
+        }
+        val req = Request.Builder().url("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", Settings.claudeKey).header("anthropic-version", "2023-06-01")
+            .post(body.toString().toRequestBody(JSON_TYPE)).build()
+        http.newCall(req).execute().use { res ->
+            val text = res.body?.string().orEmpty()
+            if (!res.isSuccessful) throw AiException("Claude web search error ${res.code}: ${errorMessage(text)}")
+            val content = json.parseToJsonElement(text).jsonObject["content"] as? JsonArray ?: return@use emptyList<Discover.Candidate>()
+            val out = ArrayList<Discover.Candidate>()
+            for (b in content) {
+                val o = b.jsonObject
+                if (o["type"]?.jsonPrimitive?.content != "web_search_tool_result") continue
+                val results = o["content"] as? JsonArray ?: continue
+                for (r in results) {
+                    val ro = r.jsonObject
+                    val url = ro["url"]?.jsonPrimitive?.content ?: continue
+                    out.add(Discover.Candidate(ro["title"]?.jsonPrimitive?.content ?: url, url))
+                }
+            }
+            out
+        }
+    }
+
     private fun openAiCompatible(system: String, prompt: String, img: String?, maxTokens: Int): String {
         val base = Settings.localUrl.trimEnd('/')
         if (base.isBlank()) throw AiException("Set your local AI server address in Settings.")

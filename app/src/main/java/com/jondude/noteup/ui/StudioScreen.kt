@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +74,9 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
     var error by remember { mutableStateOf<String?>(null) }
     var viewSource by remember { mutableStateOf<String?>(null) }
     var dialog by remember { mutableStateOf<String?>(null) }
+    var found by remember { mutableStateOf<List<com.jondude.noteup.data.Discoverer.Found>>(emptyList()) }
+    var topicText by remember { mutableStateOf(nb.title) }
+    var wanted by remember { mutableStateOf(15) }
 
     fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_LONG).show()
     fun aiReady(): Boolean {
@@ -199,7 +203,7 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
                         busy = null
                     }
                 })
-            1 -> SourcesTab(nbId, busy != null, onPaste = { dialog = "paste" }, onWeb = { dialog = "web" }, onPdf = { pickPdf.launch(arrayOf("application/pdf")) },
+            1 -> SourcesTab(nbId, busy != null, onPaste = { dialog = "paste" }, onWeb = { dialog = "web" }, onPdf = { pickPdf.launch(arrayOf("application/pdf")) }, onDiscover = { dialog = "discover" },
                 onOverview = ::overview, onView = { viewSource = it }, onAsk = { q -> tab = 0; ask(q) },
                 onGuide = { s -> busy = "Reading ${s.title}…"; scope.launch { try { guideFor(s) } catch (e: Exception) { error = e.message }; busy = null } })
             else -> MakeTab(nbId, busy != null, ::makeReport, ::openRef, onSaved = { idx -> toast("Saved as pages."); onOpenPage(nbId, idx) })
@@ -208,6 +212,65 @@ fun StudioScreen(nbId: String, onBack: () -> Unit, onOpenPage: (String, Int) -> 
 
     // ---- dialogs ----
     when (dialog) {
+        "discover" -> {
+            val picks = remember { androidx.compose.runtime.mutableStateListOf<Int>() }
+            InkDialog("Discover sources", onDismiss = { if (busy == null) dialog = null }) {
+                if (found.isEmpty()) {
+                    T("The AI searches the web for pages on your subject, reads them and lets you choose which to add.", size = 14.sp, color = Ink.Gray)
+                    Spacer(Modifier.height(10.dp))
+                    InkField(topicText, { topicText = it }, hint = "Subject to research", singleLine = false, minLines = 2)
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        T("How many", size = 14.sp)
+                        listOf(10, 15, 20).forEach { n -> InkButton("$n", small = true, on = wanted == n) { wanted = n } }
+                    }
+                    busy?.let { T(it, italic = true, color = Ink.Gray, modifier = Modifier.padding(top = 10.dp)) }
+                    error?.let { T(it, italic = true, modifier = Modifier.padding(top = 10.dp)) }
+                    Spacer(Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        InkButton(if (busy == null) "Find sources" else "Working…", on = true, enabled = busy == null && topicText.isNotBlank()) {
+                            error = null; busy = "Searching the web…"
+                            scope.launch {
+                                try {
+                                    val have = Store.sourcesOf(nbId).mapNotNull { it.url }.toSet()
+                                    found = com.jondude.noteup.data.Discoverer.discover(topicText.trim(), wanted, have) { busy = it }
+                                    picks.clear(); picks.addAll(found.indices)
+                                } catch (e: Exception) { error = e.message ?: "Search failed." }
+                                busy = null
+                            }
+                        }
+                        InkButton("Cancel", enabled = busy == null) { dialog = null }
+                    }
+                } else {
+                    T("Found ${found.size}. Untick any you don't want.", size = 14.sp, color = Ink.Gray)
+                    Spacer(Modifier.height(8.dp))
+                    Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
+                        found.forEachIndexed { i, f ->
+                            val on = i in picks
+                            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable { if (on) picks.remove(i) else picks.add(i) }, verticalAlignment = Alignment.Top) {
+                                T(if (on) "☑" else "☐", size = 20.sp, modifier = Modifier.padding(end = 10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    T(f.title, bold = true, size = 15.sp, maxLines = 2)
+                                    T(com.jondude.noteup.ai.Discover.domain(f.url) + " · ${f.text.length / 1000}k chars", size = 12.sp, sans = true, color = Ink.Gray)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        InkButton("Add ${picks.size}", on = true, enabled = picks.isNotEmpty()) {
+                            val chosen = picks.sorted().map { found[it] }
+                            chosen.forEach { f -> Store.upsertSource(Source(notebookId = nbId, title = f.title, kind = "web", text = f.text, url = f.url)) }
+                            found = emptyList(); dialog = null; tab = 1
+                            toast("Added ${chosen.size} sources. Writing guides…")
+                            scope.launch { Store.sourcesOf(nbId).filter { it.summary == null }.forEach { try { guideFor(it) } catch (_: Exception) {} } }
+                        }
+                        InkButton("Search again") { found = emptyList() }
+                        InkButton("Close") { found = emptyList(); dialog = null }
+                    }
+                }
+            }
+        }
         "paste" -> {
             var title by remember { mutableStateOf("") }
             var text by remember { mutableStateOf("") }
@@ -324,7 +387,7 @@ private fun ChatTab(
 @Composable
 private fun SourcesTab(
     nbId: String, busy: Boolean,
-    onPaste: () -> Unit, onWeb: () -> Unit, onPdf: () -> Unit, onOverview: () -> Unit,
+    onPaste: () -> Unit, onWeb: () -> Unit, onPdf: () -> Unit, onOverview: () -> Unit, onDiscover: () -> Unit,
     onView: (String) -> Unit, onAsk: (String) -> Unit, onGuide: (Source) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -334,6 +397,7 @@ private fun SourcesTab(
         T("Your pages, handwriting and recordings in this notebook are always included. Add anything else you want the AI to read here.", color = Ink.Gray, size = 15.sp)
         Spacer(Modifier.height(12.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            InkButton("Discover sources", small = true, on = true, enabled = !busy, onClick = onDiscover)
             InkButton("+ Paste text", small = true, enabled = !busy, onClick = onPaste)
             InkButton("+ Web link", small = true, enabled = !busy, onClick = onWeb)
             InkButton("+ PDF", small = true, enabled = !busy, onClick = onPdf)
